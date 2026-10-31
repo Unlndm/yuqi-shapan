@@ -49,26 +49,12 @@
     <!-- 底部控件：方向键（高画布十字 / 矮画布一行）+ 上关·重置·帮助·下关 -->
     <div class="pad" style="left:{{padL}}px;top:{{padT}}px;width:{{padW}}px;height:{{padH}}px">
       <!-- 高画布：虚拟摇杆（触摸 → 归一化向量 → 主方向逐格移动）；矮画布仍保留四向键 -->
-      <block if="{{!compact}}">
+      <block>
         <div class="joy-base" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
           <div class="joy-knob" style="left:{{knobL}}px;top:{{knobT}}px;width:{{knobD}}px;height:{{knobD}}px;background-color:{{t.primaryContainer}}"></div>
         </div>
         <div class="joy-touch" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px"
              @touchstart="onJoyStart" @touchmove="onJoyMove" @touchend="onJoyEnd"></div>
-      </block>
-      <block if="{{compact}}">
-        <input type="button" class="dbtn" value="左"
-               style="left:{{lfL}}px;top:{{lfT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="moveLeft" />
-        <input type="button" class="dbtn" value="上"
-               style="left:{{upL}}px;top:{{upT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="moveUp" />
-        <input type="button" class="dbtn" value="下"
-               style="left:{{dnL}}px;top:{{dnT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="moveDown" />
-        <input type="button" class="dbtn" value="右"
-               style="left:{{rtL}}px;top:{{rtT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="moveRight" />
       </block>
 
       <block if="{{!compact}}">
@@ -421,7 +407,7 @@ export default {
     var actH = 34
     var dirH = compact ? key : (key * 2 + gapD)
     // 矮画布：功能键收进抽屉 → 控制区只占一行方向键（44），棋盘视口 94 → 130
-    var blockH = compact ? key : (dirH + 6 + actH)
+    var blockH = compact ? 56 : (dirH + 6 + actH)
 
     var viewTop = topY + topH + midGap
     var viewH = this.pageH - viewTop - blockH - midGap - bottomPad
@@ -475,12 +461,12 @@ export default {
     this.padH = blockH
     this.key = key
     this.actH = actH
-    this.joyL = 0
+    this.joyD = compact ? 56 : 84
+    this.knobD = compact ? 24 : 36
+    this.joyL = compact ? Math.round((176 - this.joyD) / 2) : 0
     this.joyT = 0
-    this.joyD = 84
-    this.knobD = 36
-    this.knobL = 24
-    this.knobT = 24
+    this.knobL = Math.round(this.joyD / 2 - this.knobD / 2)
+    this.knobT = this.knobL
 
     if (compact) {
       // 矮画布：四方向键排成一行（4×44 = 176，正好一条），下面一行功能键。
@@ -610,8 +596,9 @@ export default {
     var st = this.st
     var t = this.t
     if (st.walls[i]) return { t: '', fg: WALL_BG, bg: WALL_BG, bd: WALL_BD }
-    if (!st.visited[i]) return { t: '', fg: FOG_BG, bg: FOG_BG, bd: FOG_BD }
+    // 玩家所在格永远可见（即使 visited 异常也不能把人藏进雾里）
     if (i === st.player) return { t: '人', fg: t.onPrimary, bg: t.primary, bd: t.primary }
+    if (!st.visited[i]) return { t: '', fg: FOG_BG, bg: FOG_BG, bd: FOG_BD }
     if (i === st.exit) {
       if (st.collectedKeys < st.totalKeys) {
         return { t: '锁', fg: t.onSurfaceVariant, bg: t.surfaceVariant, bd: t.outline }
@@ -669,8 +656,8 @@ export default {
     this.joyActive = false
     this.joyDir = ''
     if (this.joyTimer) { clearInterval(this.joyTimer); this.joyTimer = null }
-    this.knobL = 24
-    this.knobT = 24
+    this.knobL = Math.round(this.joyD / 2 - this.knobD / 2)
+    this.knobT = this.knobL
   },
 
   trackJoy(e) {
@@ -679,7 +666,7 @@ export default {
     var k = this.designK || 1
     var x = (t.clientX !== undefined ? t.clientX : t.x) / k
     var y = (t.clientY !== undefined ? t.clientY : t.y) / k
-    var cx = this.padL + this.joyD / 2
+    var cx = this.padL + this.joyL + this.joyD / 2
     var cy = this.padT + this.joyD / 2
     var dx = x - cx
     var dy = y - cy
