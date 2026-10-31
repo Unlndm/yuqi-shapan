@@ -530,6 +530,9 @@ export default {
     var arr = []
     for (var i = 0; i < st.width * st.height; i++) {
       var look = this.cellLook(i)
+      // 原生渲染裁剪：墙 / 已探明地板由单张 tilemap 底图承担，不再为每格创建节点。
+      // 只保留雾、玩家和道具这些“动态/覆盖”节点，225 格可降到几十个。
+      if (!look.t && !look.img && look.bg === 'transparent') continue
       arr.push({
         left: (i % st.width) * step,
         top: Math.floor(i / st.width) * step,
