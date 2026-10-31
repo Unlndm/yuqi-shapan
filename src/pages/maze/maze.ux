@@ -26,7 +26,7 @@
         <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{hudF2}}px">{{hud2}}</text>
       </div>
       <!-- 矮画布：显示优先 —— 底部只留方向键，上关/重置/帮助/下关进此抽屉 -->
-      <input type="button" if="{{isPill}}" class="menu-fab" value="菜单"
+      <input type="button" class="menu-fab" value="菜单"
              style="width:34px;height:34px;border-radius:17px;font-size:10px;margin-left:6px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
              @click="openMenu" />
     </div>
@@ -48,32 +48,12 @@
       </div>
     </scroll>
 
-    <!-- 底部控件：方向键（高画布十字 / 矮画布一行）+ 上关·重置·帮助·下关 -->
-    <div class="pad" style="left:{{padL}}px;top:{{padT}}px;width:{{padW}}px;height:{{padH}}px">
-      <!-- 高画布：虚拟摇杆（触摸 → 归一化向量 → 主方向逐格移动）；矮画布仍保留四向键 -->
-      <block>
-        <div class="joy-base" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
-          <div class="joy-knob" style="left:{{knobL}}px;top:{{knobT}}px;width:{{knobD}}px;height:{{knobD}}px;background-color:{{t.primaryContainer}}"></div>
-        </div>
-        <div class="joy-touch" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px"
-             @touchstart="onJoyStart" @touchmove="onJoyMove" @touchend="onJoyEnd"></div>
-      </block>
-
-      <block if="{{!compact}}">
-        <input type="button" class="abtn" value="{{pLabel}}"
-               style="left:{{a1L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="prevLevel" />
-        <input type="button" class="abtn" value="重置"
-               style="left:{{a2L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="resetLevel" />
-        <input type="button" class="abtn" value="帮助"
-               style="left:{{a3L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
-               @click="openHelp" />
-        <input type="button" class="abtn" value="{{nLabel}}"
-               style="left:{{a4L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{nextHot ? t.onPrimaryContainer : t.onSurfaceVariant}};background-color:{{nextHot ? t.primaryContainer : t.surfaceContainerHigh}};border-color:{{nextHot ? t.primaryContainer : t.outline}}"
-               @click="nextLevel" />
-      </block>
+    <!-- 全屏棋盘上的悬浮摇杆：右下角，不占布局 -->
+    <div class="joy-base" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+      <div class="joy-knob" style="left:{{knobL}}px;top:{{knobT}}px;width:{{knobD}}px;height:{{knobD}}px;background-color:{{t.primaryContainer}}"></div>
     </div>
+    <div class="joy-touch" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px"
+         @touchstart="onJoyStart" @touchmove="onJoyMove" @touchend="onJoyEnd"></div>
 
     <!-- 矮画布抽屉：上关 / 重置 / 帮助 / 下关（底部只留方向键，把高度还给棋盘） -->
     <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
@@ -411,16 +391,16 @@ export default {
     var actH = 34
     var dirH = compact ? key : (key * 2 + gapD)
     // 矮画布：功能键收进抽屉 → 控制区只占一行方向键（44），棋盘视口 94 → 130
-    var blockH = compact ? 56 : (dirH + 6 + actH)
-
-    var viewTop = topY + topH + midGap
-    var viewH = this.pageH - viewTop - blockH - midGap - bottomPad
+    var blockH = 0
+    // HUD 悬浮在顶部，但棋盘从 HUD 下方开始，避免最上面两三行被 HUD 盖住。
+    var viewTop = topY + topH + 4
+    var viewH = this.pageH - viewTop
     if (viewH < 50) viewH = 50
     var viewBottom = viewTop + viewH
 
     var cols = this.st ? this.st.width : 9
     var rows = this.st ? this.st.height : 9
-    var vw = 176
+    var vw = 192
     var gap = 0
     var fitW = Math.floor((vw - 2 - (cols - 1) * gap) / cols)
     var fitH = Math.floor((viewH - 2 - (rows - 1) * gap) / rows)
@@ -449,7 +429,7 @@ export default {
     this.compact = compact
     this.pLabel = this.isPill ? '上关' : '上一关'
     this.nLabel = this.isPill ? '下关' : '下一关'
-    this.vx = 8
+    this.vx = 0
     this.vy = viewTop
     this.vw = vw
     this.vh = viewH
@@ -461,51 +441,15 @@ export default {
     this.boxH = boxH
     this.boardBg = this.t.surfaceContainer
 
-    this.padT = viewBottom + midGap
-    this.padH = blockH
     this.key = key
     this.actH = actH
     this.joyD = compact ? 56 : 84
     this.knobD = compact ? 24 : 36
-    this.joyL = compact ? Math.round((176 - this.joyD) / 2) : 0
-    this.joyT = 0
+    this.joyL = 192 - this.joyD - 12
+    this.joyT = this.pageH - this.joyD - 16
     this.knobL = Math.round(this.joyD / 2 - this.knobD / 2)
     this.knobT = this.knobL
 
-    if (compact) {
-      // 矮画布：四方向键排成一行（4×44 = 176，正好一条），下面一行功能键。
-      this.padW = 176
-      this.padL = 8
-      this.lfL = 0; this.lfT = 0
-      this.upL = key; this.upT = 0
-      this.dnL = key * 2; this.dnT = 0
-      this.rtL = key * 3; this.rtT = 0
-      var aw = this.isPill ? 34 : Math.floor((176 - gapD * 3) / 4)   // 41 ≥ 34
-      this.aw = aw
-      var actL = Math.floor((176 - (aw * 4 + gapD * 3)) / 2)
-      this.a1L = actL
-      this.a2L = actL + aw + gapD
-      this.a3L = actL + (aw + gapD) * 2
-      this.a4L = actL + (aw + gapD) * 3
-      this.aT = key + gapD
-    } else {
-      // 高画布：十字方向键居中，功能键排成一行（4×35 + 3×4 = 152）
-      this.padW = 152
-      this.padL = Math.round((192 - this.padW) / 2)
-      var crossL = Math.floor((this.padW - (key * 3 + gapD * 2)) / 2)
-      this.upL = crossL + key + gapD; this.upT = 0
-      this.lfL = crossL; this.lfT = key + gapD
-      this.dnL = crossL + key + gapD; this.dnT = key + gapD
-      this.rtL = crossL + (key + gapD) * 2; this.rtT = key + gapD
-      var aw2 = this.isPill ? 34 : Math.floor((this.padW - gapD * 3) / 4)   // 35 ≥ 34
-      this.aw = aw2
-      var actL2 = Math.floor((this.padW - (aw2 * 4 + gapD * 3)) / 2)
-      this.a1L = actL2
-      this.a2L = actL2 + aw2 + gapD
-      this.a3L = actL2 + (aw2 + gapD) * 2
-      this.a4L = actL2 + (aw2 + gapD) * 3
-      this.aT = dirH + 6
-    }
   },
 
   // ── 关卡与存档 ──────────────────────────────────────────────────
@@ -684,8 +628,8 @@ export default {
     var k = this.designK || 1
     var x = (t.clientX !== undefined ? t.clientX : t.x) / k
     var y = (t.clientY !== undefined ? t.clientY : t.y) / k
-    var cx = this.padL + this.joyL + this.joyD / 2
-    var cy = this.padT + this.joyD / 2
+    var cx = this.joyL + this.joyD / 2
+    var cy = this.joyT + this.joyD / 2
     var dx = x - cx
     var dy = y - cy
     var max = this.joyD / 2 - this.knobD / 2

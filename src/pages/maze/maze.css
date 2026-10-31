@@ -5,6 +5,7 @@
  * 布局：整页绝对定位叠放 —— 顶栏 / 棋盘滚动区 / 底部控件，互不挤压。
  */
 .page {
+  position: relative;
   width: 192px;
   height: 100%;
   overflow: hidden;
