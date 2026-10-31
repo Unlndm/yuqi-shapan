@@ -137,7 +137,7 @@
         <!-- 多机可动：选择行动 -->
         <block if="{{dlg === 'choose'}}">
           <text class="modal-title" style="color:{{t.onSurface}}">选择行动</text>
-          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">有多架飞机可以移动</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">有多架飞机可以移动 · 棋盘高亮为预计落点</text>
           <scroll class="m-list" scroll-y="true">
             <div class="row-act" for="{{(ci, c) in choices}}"
                  style="background-color:{{t.surfaceContainer}};border-color:{{t.outline}}"
@@ -293,6 +293,7 @@ export default {
     hopPlayer: -1,
     hopPlane: -1,
     flashCell: -1,       // 落点格高亮（落定后闪一下）
+    previewCells: [],   // 选择行动时，各候选预计落点
     geoCw: 20,           // layoutBoard 缓存下来的几何（syncTokens 复用，避免动画每拍重算）
     ringBaseKey: 0,      // baseRing 缓存键（pageH）
     ringBase: null,      // baseRing 结果 {a,b,cw,gh,gv}
@@ -645,7 +646,7 @@ export default {
         bg: bg,
         fg: fg,
         glyph: glyph,
-        border: k === this.flashCell ? t.primary : (rc.kind === 'start' ? t.onSurface : 'rgba(0,0,0,0.35)'),
+        border: (k === this.flashCell || this.previewCells.indexOf(k) >= 0) ? t.primary : (rc.kind === 'start' ? t.onSurface : 'rgba(0,0,0,0.35)'),
         fs: fs,
         lh: lh
       })
@@ -965,11 +966,26 @@ export default {
     }
     this.choices = choices
     this.pendingMoves = moves
+    // 选择行动时把每个候选的预计落点高亮，避免只看文字猜位置。
+    var pv = []
+    for (var pi = 0; pi < moves.length; pi++) {
+      var pd = moves[pi].d
+      if (typeof pd === 'number' && pd >= 0) pv.push(pd)
+    }
+    this.previewCells = pv
+    this.buildCells()
     this.dlg = 'choose'
+  },
+
+  clearPreview() {
+    if (!this.previewCells || !this.previewCells.length) return
+    this.previewCells = []
+    this.buildCells()
   },
 
   doChoose(ci) {
     var mv = this.pendingMoves && this.pendingMoves[ci]
+    this.clearPreview()
     this.dlg = ''
     if (!mv) return
     this.execMove(this.pendingPlayer, mv)
@@ -977,6 +993,7 @@ export default {
 
   // 执行动作：先逐格演出，再落到引擎
   execMove(player, mv) {
+    this.clearPreview()
     var that = this
     var from = this.disp[player][mv.plane]
     var path = []
