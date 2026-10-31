@@ -1,0 +1,923 @@
+<!--
+  pages/sudoku — 单人 9×9 数独。
+  职责：渲染棋盘（81 格，for 循环）+ 选格高亮 + 1~9 键盘 / 擦除 / 笔记 / 撤销 / 提示 /
+        计时 / 错误计数 / 难度选择，驱动规则层（rules/sudoku.js）并做存档与演出。
+  规则逻辑全部在 rules/sudoku.js；题目在 rules/sudoku-puzzles.js（三档各 30 题）。
+  渲染约定（本平台约束）：
+    · 棋盘用 `for="{{cells}}"`（minesweeper.ux 已验证），每格自带几何与显示字段；
+    · 棋盘放在原生 <scroll scroll-x scroll-y> 里：适应档整盘可见，「放大」档可拖动查看；
+    · 选格判定沿用 minesweeper 的热区 + offsetX/offsetY 几何反推（格本身不绑事件）；
+    · 所有按钮显式内联 background-color 与 border-color；形状/圆角/排版写进 sudoku.css；
+    · 不自绘 swipe/drag（自绘触摸会吞掉系统侧滑返回手势）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏：返回 + 两行状态（错误/提示、用时）+ 帮助 -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{hudF1}}px">用时 {{timeLabel}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{hudF2}}px">错误 {{errors}} · 提示 {{hintsUsed}}/{{hintMax}}</text>
+      </div>
+      <input type="button" class="help-fab" value="?"
+             style="width:{{helpS}}px;height:{{helpS}}px;border-radius:{{helpR}}px;font-size:{{helpF}}px;color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}"
+             @click="fabTap" />
+    </div>
+
+    <!-- 棋盘滚动区：适应档整盘可见；放大档内容超出视口时拖动查看。
+         内容结构照 game.ux 的真机结论：scroll 内放**流式** stage，board 用外边距定位。 -->
+    <scroll class="bscroll" id="sudoku-scroll" scroll-x="true" scroll-y="true" bounces="false"
+            style="left:{{vx}}px;top:{{vy}}px;width:{{vw}}px;height:{{vh}}px">
+      <div class="stage" style="width:{{wrapW}}px;height:{{wrapH}}px">
+        <div class="board" style="margin-left:{{boardL}}px;margin-top:{{boardT}}px;width:{{boxW}}px;height:{{boxH}}px;background-color:{{boardBg}};border-color:{{t.outline}}">
+          <div class="cell" for="{{cells}}"
+               style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;background-color:{{$item.bg}};border-color:{{$item.bd}}">
+            <text class="cv" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.v}}</text>
+            <text class="cn" style="left:0px;top:{{$item.nt}}px;width:{{$item.w}}px;color:{{$item.nfg}};font-size:{{$item.nfs}}px;line-height:{{$item.nlh}}px">{{$item.n}}</text>
+          </div>
+          <!-- 3×3 宫分隔线（压在格之上、热区之下） -->
+          <div class="gl" style="left:{{gv1}}px;top:0px;width:2px;height:{{innerH}}px;background-color:{{t.outline}}"></div>
+          <div class="gl" style="left:{{gv2}}px;top:0px;width:2px;height:{{innerH}}px;background-color:{{t.outline}}"></div>
+          <div class="gl" style="left:0px;top:{{gh1}}px;width:{{innerW}}px;height:2px;background-color:{{t.outline}}"></div>
+          <div class="gl" style="left:0px;top:{{gh2}}px;width:{{innerW}}px;height:2px;background-color:{{t.outline}}"></div>
+        </div>
+        <!-- 落点热区：与棋盘同几何，offsetX/offsetY + 实测换算系数反推格号 -->
+        <div class="tap-layer" id="sudoku-board"
+             style="left:{{boardL}}px;top:{{boardT}}px;width:{{boxW}}px;height:{{boxH}}px"
+             @click="onBoardTap"></div>
+      </div>
+    </scroll>
+
+    <!-- 数字键盘：1~5 / 6~9 + 擦除（每键 34×34）。
+         矮画布（<400）：显示优先 —— 键盘不常驻，选中格后浮出、落数即收起；功能键进「?」抽屉。 -->
+    <div class="keys keypad-pop" if="{{(!compact || padOpen) && dlg === ''}}" style="left:{{keysL}}px;top:{{keysT}}px;width:{{keysW}}px;height:{{keysH}}px;background-color:{{t.surface}}">
+      <input type="button" class="key" value="1" style="left:{{k0L}}px;top:{{k0T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap1" />
+      <input type="button" class="key" value="2" style="left:{{k1L}}px;top:{{k0T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap2" />
+      <input type="button" class="key" value="3" style="left:{{k2L}}px;top:{{k0T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap3" />
+      <input type="button" class="key" value="4" style="left:{{k3L}}px;top:{{k0T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap4" />
+      <input type="button" class="key" value="5" style="left:{{k4L}}px;top:{{k0T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap5" />
+      <input type="button" class="key" value="6" style="left:{{k0L}}px;top:{{k1T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap6" />
+      <input type="button" class="key" value="7" style="left:{{k1L}}px;top:{{k1T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap7" />
+      <input type="button" class="key" value="8" style="left:{{k2L}}px;top:{{k1T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap8" />
+      <input type="button" class="key" value="9" style="left:{{k3L}}px;top:{{k1T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="tap9" />
+      <input type="button" class="key" value="擦" style="left:{{k4L}}px;top:{{k1T}}px;width:{{keyS}}px;height:{{keyS}}px;font-size:{{kf}}px;color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="eraseCell" />
+    </div>
+
+    <!-- 功能键：笔记 / 撤销 / 提示 / 缩放 / 难度（矮画布收进「?」抽屉） -->
+    <div class="acts" if="{{!compact}}" style="left:{{actsL}}px;top:{{actsT}}px;width:{{actsW}}px;height:{{actsH}}px">
+      <input type="button" class="act" value="笔记"
+             style="left:{{a0L}}px;top:0px;width:{{actS}}px;height:{{actsH}}px;font-size:{{sf}}px;color:{{notesMode ? t.onPrimaryContainer : t.onSurface}};background-color:{{notesMode ? t.primaryContainer : t.surfaceContainerHigh}};border-color:{{notesMode ? t.primaryContainer : t.outline}}"
+             @click="toggleNotes" />
+      <input type="button" class="act" value="撤销"
+             style="left:{{a1L}}px;top:0px;width:{{actS}}px;height:{{actsH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="undoMove" />
+      <input type="button" class="act" value="提示"
+             style="left:{{a2L}}px;top:0px;width:{{actS}}px;height:{{actsH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="useHint" />
+      <input type="button" class="act" value="{{zoomLabel}}"
+             style="left:{{a3L}}px;top:0px;width:{{actS}}px;height:{{actsH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="toggleZoom" />
+      <input type="button" class="act" value="{{diffLabel}}"
+             style="left:{{a4L}}px;top:0px;width:{{actS}}px;height:{{actsH}}px;font-size:{{sf}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+             @click="openDiff" />
+    </div>
+
+    <!-- 矮画布「?」抽屉：玩法介绍 / 笔记 / 撤销 / 提示 / 缩放 / 难度
+         （底部只留棋盘，选中格后键盘才浮出，整盘 9×9 可见） -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <div class="d-grid">
+          <input type="button" value="玩法介绍" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuHelp" />
+          <input type="button" value="笔记 {{notesMode ? '开' : '关'}}" class="d-item"
+                 style="color:{{notesMode ? t.primary : t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuNotes" />
+          <input type="button" value="撤销" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuUndo" />
+          <input type="button" value="提示" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuHint" />
+          <input type="button" value="{{zoomLabel}}" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom" />
+          <input type="button" value="难度 · {{diffLabel}}" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuDiff" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 弹窗：难度选择 / 通关 -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <block if="{{dlg === 'diff'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">选择难度</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">切换会开一道新题，当前进度不保留</text>
+          <!-- 三档横排（矮画布也放得下）：每个按钮 ≥40×34，触摸目标达标 -->
+          <div class="diff-row">
+            <input type="button" class="d-btn" value="简单"
+                   style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                   @click="pickEasy" />
+            <input type="button" class="d-btn" value="普通"
+                   style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                   @click="pickNormal" />
+            <input type="button" class="d-btn" value="困难"
+                   style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                   @click="pickHard" />
+          </div>
+          <input type="button" class="m-btn" value="取 消"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="closeDlg" />
+        </block>
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">完成</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{winSub}}</text>
+          <input type="button" class="m-btn" value="再来一题"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="newSame" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './sudoku.css';
+</style>
+
+<script>
+/**
+ * 数独页脚本。
+ * 规则状态 this.st = { cells, givens, solution }（cells 会被就地改写；渲染时全量重建）；
+ * 笔记用 81 个位掩码（bit 1~9），撤销栈只回退「棋盘 + 笔记」，错误数与提示次数不回退（防刷）。
+ * 自动存档（@system.storage 经 utils/config 的 pref 接口）：键 save_sudoku；
+ *   难度偏好：sudoku_difficulty。存档含棋盘、笔记、用时、错误数、已用提示。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var toastMod = global.YQ.toast
+var economy = global.YQ.economy
+var rng = global.YQ.rng
+var sudoku = require('../../rules/sudoku.js')
+var puzzles = require('../../rules/sudoku-puzzles.js')
+
+// 输入：字符串；输出：稳定正整数散列（闯关按关卡 id 固定选题，同一关每次进同一题）。
+function hashStr(s) {
+  var h = 0
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 1000003
+  return h > 0 ? h : 1
+}
+
+var SIZE = 9
+var CELLS = 81
+var MAX_HINTS = 3
+var HISTORY_MAX = 120
+var GRID_GAP = 1
+var FIT_CELL = 18           // 适应档：9×18 + 8×1 + 2 = 172 ≤ 176，整盘可见
+var ZOOM_CELL = 28          // 放大档：内容 262×262，交给原生 scroll 查看
+
+var DIFF_LABEL = { easy: '简单', normal: '普通', hard: '困难' }
+
+// 输入：秒数；输出：'M:SS' 文案（负值/脏值兜底 0）。
+function fmt(sec) {
+  var s = (typeof sec === 'number' && isFinite(sec) && sec > 0) ? Math.floor(sec) : 0
+  var m = Math.floor(s / 60)
+  var r = s % 60
+  return m + ':' + (r < 10 ? '0' + r : '' + r)
+}
+
+// 输入：任意值；输出：合法难度（非法兜底 easy）。
+function normDiff(v) {
+  return (v === 'normal' || v === 'hard') ? v : 'easy'
+}
+
+// 输入：任意值、最小值、最大值；输出：夹紧后的整数。
+function clampInt(v, lo, hi) {
+  var n = typeof v === 'number' && isFinite(v) ? Math.floor(v) : lo
+  if (n < lo) return lo
+  if (n > hi) return hi
+  return n
+}
+
+// 输入：题目 id；输出：题目对象或 null。
+function findPuzzle(id) {
+  var all = puzzles.ALL || []
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].id === id) return all[i]
+  }
+  return null
+}
+
+// 输入：存档 cells、题面状态；输出：合法 81 格数组或 null（题面固定格必须一致）。
+function readSavedCells(src, st) {
+  if (!src || typeof src.length !== 'number' || src.length !== CELLS) return null
+  var out = []
+  for (var i = 0; i < CELLS; i++) {
+    var v = src[i]
+    if (typeof v !== 'number' || !isFinite(v) || v < 0 || v > 9 || Math.floor(v) !== v) return null
+    if (st.givens[i] && v !== st.cells[i]) return null
+    out.push(v)
+  }
+  return out
+}
+
+// 输入：存档 notes；输出：合法 81 个位掩码（非法项归 0）。
+function readSavedNotes(src) {
+  var out = []
+  for (var i = 0; i < CELLS; i++) {
+    var v = src && typeof src.length === 'number' && src.length === CELLS ? src[i] : 0
+    out.push((typeof v === 'number' && isFinite(v) && v >= 0 && v <= 1022 && Math.floor(v) === v) ? v : 0)
+  }
+  return out
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    isPill: true,
+    errors: 0,
+    hintsUsed: 0,
+    hintMax: MAX_HINTS,
+    timeLabel: '0:00',
+    diffLabel: '简单',
+    zoomLabel: '放大',
+    notesMode: false,
+    dlg: '',
+    winSub: '',
+    // 矮画布（<400）：键盘按需浮出（不占布局高度），功能键进「?」抽屉 —— 显示优先
+    compact: false,
+    padOpen: false,
+    showMenu: false,
+
+    padX: 8, topY: 58, topH: 44, hudW: 176, sf: 11, navSize: 44, navFont: 20, navR: 22,
+    helpS: 34, helpR: 17, helpF: 16, kf: 16, hudF1: 14, hudF2: 11,
+    fz: config.fontTokens('normal'),
+    vx: 8, vy: 158, vw: 176, vh: 250, wrapW: 176, wrapH: 250,
+    boardL: 2, boardT: 39, boxW: 172, boxH: 172, innerW: 170, innerH: 170,
+    gv1: 56, gv2: 113, gh1: 56, gh2: 113, boardBg: themeMod.current().surfaceContainer,
+    cells: [],
+    keyS: 34, keysL: 9, keysT: 320, keysW: 174, keysH: 70,
+    k0L: 0, k1L: 35, k2L: 70, k3L: 105, k4L: 140, k0T: 0, k1T: 36,
+    actsL: 9, actsT: 400, actsW: 174, actsH: 34, actS: 34,
+    a0L: 0, a1L: 35, a2L: 70, a3L: 105, a4L: 140
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    // 每日挑战：由种子选难度与题号（不读普通存档/难度偏好）；普通模式行为不变。
+    this.isChallenge = Number(this.challenge) === 1
+    // 闯关模式：按关卡 id 固定选题、按关卡难度取题，不写普通存档
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    this.dailySeed = 0
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'sudoku')
+      this.dailySeed = seedNum
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.timers = []
+    this.tickOn = false
+    this.sec = 0
+    this.cell = FIT_CELL
+    this.gap = GRID_GAP
+    this.sel = -1
+    this.notes = []
+    this.undo = []
+    this.won = false
+    this.recorded = false      // 本局是否已写战绩（一局通关只记一次）
+    this.zoom = false
+    this.puzzleId = ''
+    this.diff = 'easy'
+    this.designK = 1
+    this.clientKx = 0
+    this.clientKy = 0
+
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('sudoku_difficulty', 'easy'),
+      config.getPref('save_sudoku', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.designK = l.scale
+      that.clientKx = l.scale
+      that.clientKy = l.scale
+      that.layout()
+      if (that.isChallenge) {
+        that.newChallengePuzzle()
+        return
+      }
+      if (that.isCampaign) {
+        var d = normDiff(that.campaignDiff)
+        var group = puzzles.BY_DIFFICULTY[d] || puzzles.EASY || []
+        that.newPuzzle(d, group.length ? group[hashStr(that.campaignId) % group.length] : null)
+        return
+      }
+      var restored = false
+      try { restored = that.restore(vals[2]) } catch (e) { restored = false }
+      if (!restored) {
+        that.newPuzzle(normDiff(vals[1]))
+      } else {
+        that.rebuild()
+        that.startTick()
+        that.after(60, function () { that.measureTouch() })
+      }
+    })
+    config.loadSettings().then(function (s) {
+      var changed = config.applyTheme(that, s)
+      if (changed) that.paint()
+      haptic.applySettings(s)
+    })
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() {
+    screen.keepScreenOn(true)
+    if (this.st && !this.won && !this.tickOn) this.startTick()
+  },
+  onHide() {
+    screen.keepScreenOn(false)
+    if (this.st) this.saveGame()
+    this.stopTick()
+  },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    if (this.st) this.saveGame()
+    this.stopTick()
+    this.timers = null
+  },
+
+  onBackPress() {
+    if (this.showMenu) { this.showMenu = false; return true }
+    if (this.padOpen) { this.padOpen = false; return true }
+    if (this.dlg !== '') { this.dlg = ''; return true }
+    if (this.st) this.saveGame()
+    this.stopTick()
+    router.back()
+    return true
+  },
+
+  // ── 矮画布「?」抽屉 ─────────────────────────────────────────────
+  // 高画布：? = 玩法介绍（原行为）；矮画布：? = 抽屉（玩法介绍 / 笔记 / 撤销 / 提示 / 缩放 / 难度）。
+  fabTap() {
+    if (this.compact) { this.showMenu = true; return }
+    this.openHelp()
+  },
+  closeMenu() { this.showMenu = false },
+  menuHelp() { this.showMenu = false; this.openHelp() },
+  menuNotes() { this.showMenu = false; this.toggleNotes() },
+  menuUndo() { this.showMenu = false; this.undoMove() },
+  menuHint() { this.showMenu = false; this.useHint() },
+  menuZoom() { this.showMenu = false; this.toggleZoom() },
+  menuDiff() { this.showMenu = false; this.openDiff() },
+
+  // 本页所有延时都走自持定时器数组，离屏/销毁时统一清空。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 计时（1 秒一拍；每 10 秒顺带存档一次，减少闪存写入） ──────────
+  startTick() {
+    if (this.tickOn || this.won) return
+    this.tickOn = true
+    this.scheduleTick()
+  },
+  scheduleTick() {
+    var that = this
+    this.after(1000, function () {
+      if (!that.tickOn) return
+      if (!that.st || that.won) { that.tickOn = false; return }
+      that.sec++
+      that.timeLabel = fmt(that.sec)
+      if (that.sec % 10 === 0) that.saveGame()
+      that.scheduleTick()
+    })
+  },
+  stopTick() {
+    this.tickOn = false
+    this.clearTimers()
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 顶栏 + 键盘两行（34×2）+ 功能键行（34）固定，其余给棋盘视口。
+  // 「适应」档整盘可见；「放大」档格宽 28，靠原生 scroll 拖动查看。
+  layout() {
+    var uiS = this.uiS || 1
+    var compact = this.pageH < 400
+    var navG = metrics.nav(uiS, compact)
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    var topH = navG.size
+    var midGap = compact ? 6 : 10
+    var key = 34
+    var keyRowsH = key * 2 + 2
+    var actsH = 34
+    var compact = this.pageH < 400
+    // 显示优先：矮画布不再常驻键盘/功能键，棋盘视口拿到整盘 9×9（172）；
+    // 键盘改为「选中格后浮在底部」的浮层，落数即收起。胶囊屏浮层宽 174 → 让位 56+4=60。
+    var bottomPad = this.isPill ? (compact ? 60 : 56) : 6
+    var reserve = compact ? 0 : (keyRowsH + actsH + 12)
+
+    var viewTop = topY + topH + midGap
+    // 竖向：顶栏 + 棋盘视口 + 底部让位（高画布另有键盘 + 功能键两行）
+    var viewH = this.pageH - viewTop - reserve - bottomPad
+    if (viewH < 60) viewH = 60
+    var keysT = compact ? (this.pageH - bottomPad - keyRowsH) : (viewTop + viewH + 6)
+    var actsT = keysT + keyRowsH + 6
+
+    var cell = this.zoom ? ZOOM_CELL : FIT_CELL
+    var gap = GRID_GAP
+    var innerW = SIZE * cell + (SIZE - 1) * gap
+    var boxW = innerW + 2
+    var boxH = innerW + 2
+    var vw = 176
+    var step = cell + gap
+
+    this.cell = cell
+    this.gap = gap
+    this.innerW = innerW
+    this.innerH = innerW
+    this.gv1 = 3 * step - gap
+    this.gv2 = 6 * step - gap
+    this.gh1 = this.gv1
+    this.gh2 = this.gv2
+    this.topY = topY
+    this.topH = topH
+    this.hudW = 176
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+    this.helpS = compact ? 34 : Math.max(34, Math.round(34 * uiS))
+    this.helpR = metrics.navRadius(this.helpS)
+    this.helpF = Math.max(14, Math.round(this.helpS * 0.46))
+    this.hudF1 = (compact ? 12 : 14) + (this.fontBump || 0)
+    this.hudF2 = (compact ? 10 : 11) + (this.fontBump || 0)
+    this.sf = (compact ? 10 : Math.max(10, Math.round(11 * uiS))) + (this.fontBump || 0)
+    this.kf = (compact ? 16 : Math.max(15, Math.round(16 * uiS))) + (this.fontBump || 0)
+    this.compact = compact
+
+    this.vx = 8
+    this.vy = viewTop
+    this.vw = vw
+    this.vh = viewH
+    this.wrapW = Math.max(vw, boxW)
+    this.wrapH = Math.max(viewH, boxH)
+    this.boardL = Math.floor((this.wrapW - boxW) / 2)
+    this.boardT = Math.floor((this.wrapH - boxH) / 2)
+    this.boxW = boxW
+    this.boxH = boxH
+    this.boardBg = this.t.surfaceContainer
+
+    this.keysL = 9
+    this.keysT = keysT
+    this.keysW = 174
+    this.keysH = keyRowsH
+    this.keyS = key
+    this.k0L = 0; this.k1L = 35; this.k2L = 70; this.k3L = 105; this.k4L = 140
+    this.k0T = 0; this.k1T = key + 2
+
+    this.actsL = 9
+    this.actsT = actsT
+    this.actsW = 174
+    this.actsH = actsH
+    this.actS = key
+    this.a0L = 0; this.a1L = 35; this.a2L = 70; this.a3L = 105; this.a4L = 140
+  },
+
+  // 输入：无；输出：无。主题变化后重绘（几何不变，只换色）。
+  paint() {
+    this.boardBg = this.t.surfaceContainer
+    this.rebuild()
+  },
+
+  // ── 题局 ────────────────────────────────────────────────────────
+  // 输入：存档对象；输出：是否恢复成功。题面固定格必须与题库一致，否则视为脏档。
+  restore(saved) {
+    if (!saved || !saved.id) return false
+    var p = findPuzzle(saved.id)
+    if (!p) return false
+    var parsed = sudoku.parse(p.puzzle, p.solution)
+    if (!parsed) return false
+    var cells = readSavedCells(saved.cells, parsed)
+    if (!cells) return false
+    var probe = { cells: cells, givens: parsed.givens }
+    if (sudoku.isComplete(probe)) return false
+    this.puzzleId = p.id
+    this.diff = normDiff(p.difficulty)
+    this.diffLabel = DIFF_LABEL[this.diff]
+    this.st = { cells: cells, givens: parsed.givens, solution: parsed.solution }
+    this.notes = readSavedNotes(saved.notes)
+    this.sec = clampInt(saved.sec, 0, 359999)
+    this.errors = clampInt(saved.err, 0, 9999)
+    this.hintsUsed = clampInt(saved.hint, 0, MAX_HINTS)
+    this.notesMode = !!saved.nm
+    this.sel = -1
+    this.padOpen = false
+    this.undo = []
+    this.won = false
+    this.recorded = false
+    this.timeLabel = fmt(this.sec)
+    return true
+  },
+
+  // 输入：难度、可选指定题目；输出：无。随机取一道该难度新题（尽量避开当前题），清空本局状态。
+  // 挑战模式传入种子选出的 forced 题目，且不写普通存档/难度偏好。
+  newPuzzle(diff, forced) {
+    var d = normDiff(diff)
+    var group = puzzles.BY_DIFFICULTY[d] || puzzles.EASY || []
+    if (!group.length) { toastMod.toast('题库为空'); return }
+    var p = forced
+    if (!p) {
+      var idx = Math.floor(Math.random() * group.length)
+      if (group.length > 1 && group[idx].id === this.puzzleId) idx = (idx + 1) % group.length
+      p = group[idx]
+    }
+    var st = sudoku.parse(p.puzzle, p.solution)
+    if (!st && group[0]) {
+      p = group[0]
+      st = sudoku.parse(p.puzzle, p.solution)
+    }
+    if (!st) { toastMod.toast('题目数据异常'); return }
+    var notes = []
+    for (var i = 0; i < CELLS; i++) notes.push(0)
+    this.diff = normDiff(p.difficulty)
+    this.diffLabel = DIFF_LABEL[this.diff]
+    this.puzzleId = p.id
+    this.st = st
+    this.notes = notes
+    this.sel = -1
+    this.padOpen = false
+    this.errors = 0
+    this.hintsUsed = 0
+    this.undo = []
+    this.sec = 0
+    this.won = false
+    this.recorded = false
+    this.notesMode = false
+    this.timeLabel = fmt(0)
+    if (!this.isChallenge && !this.isCampaign) config.saveSetting('sudoku_difficulty', d)
+    this.rebuild()
+    if (!this.isChallenge && !this.isCampaign) this.saveGame()
+    this.startTick()
+    var that = this
+    this.after(60, function () { that.measureTouch() })
+  },
+
+  // 每日挑战：种子决定难度与题号，同日同题；不读普通进度。
+  newChallengePuzzle() {
+    var diffs = ['easy', 'normal', 'hard']
+    var d = this.dailyRng ? this.dailyRng.pick(diffs) : 'easy'
+    var group = puzzles.BY_DIFFICULTY[d] || puzzles.EASY || []
+    if (!group.length) { toastMod.toast('题库为空'); return }
+    var p = group[this.dailyRng ? this.dailyRng.int(group.length) : 0]
+    this.newPuzzle(d, p)
+  },
+
+  // ── 渲染 ────────────────────────────────────────────────────────
+  // 全量重建 81 格：选中格 primaryContainer、同行/列/宫 surfaceVariant、冲突字标红。
+  rebuild() {
+    if (!this.st) { this.cells = []; return }
+    var t = this.t
+    var cells = this.st.cells
+    var givens = this.st.givens
+    var conflicts = sudoku.conflicts({ cells: cells, givens: givens })
+    var sel = this.sel
+    var sr = sel >= 0 ? Math.floor(sel / SIZE) : -1
+    var sc = sel >= 0 ? sel % SIZE : -1
+    var sb = sel >= 0 ? Math.floor(sr / 3) * 3 + Math.floor(sc / 3) : -1
+    var cell = this.cell
+    var gap = this.gap
+    var step = cell + gap
+    var fs = Math.max(9, Math.round(cell * 0.56))
+    var nfs = Math.max(7, Math.round(cell * 0.30))
+    var arr = []
+    for (var i = 0; i < CELLS; i++) {
+      var v = cells[i]
+      var given = !!givens[i]
+      var bad = conflicts.indexOf(i) >= 0
+      var selected = i === sel
+      var r = Math.floor(i / SIZE)
+      var c = i % SIZE
+      var related = false
+      if (sel >= 0 && !selected) {
+        var b = Math.floor(r / 3) * 3 + Math.floor(c / 3)
+        related = (r === sr || c === sc || b === sb)
+      }
+      var bg = selected ? t.primaryContainer : (related ? t.surfaceVariant : (given ? t.surfaceContainerHigh : t.surfaceContainer))
+      var bd = selected ? t.primary : (bad ? t.error : (given ? t.outline : bg))
+      var fg = bad ? t.error : (given ? t.onSurface : t.primary)
+      var note = (v === 0) ? this.notePreview(this.notes[i] | 0) : ''
+      arr.push({
+        left: c * step,
+        top: r * step,
+        w: cell,
+        v: v > 0 ? String(v) : '',
+        n: note,
+        bg: bg,
+        bd: bd,
+        fg: fg,
+        fs: v > 0 ? fs : 0,
+        lh: cell,
+        nfs: nfs,
+        nlh: Math.max(6, nfs + 1),
+        nt: Math.max(0, cell - nfs - 2),
+        nfg: t.onSurfaceVariant
+      })
+    }
+    this.cells = arr
+  },
+
+  // 输入：9 位笔记掩码；输出：最多 3 个字符的预览（超过 3 个用 + 收尾）。
+  notePreview(mask) {
+    if (!mask) return ''
+    var s = ''
+    for (var d = 1; d <= 9; d++) if (mask & (1 << d)) s += String(d)
+    if (s.length > 3) s = s.substr(0, 2) + '+'
+    return s
+  },
+
+  // ── 存档 ────────────────────────────────────────────────────────
+  saveGame() {
+    if (!this.st || this.won || this.isChallenge || this.isCampaign) return
+    config.saveSetting('save_sudoku', {
+      v: 1,
+      id: this.puzzleId,
+      diff: this.diff,
+      cells: this.st.cells.slice(),
+      notes: this.notes.slice(),
+      sec: this.sec,
+      err: this.errors,
+      hint: this.hintsUsed,
+      nm: this.notesMode
+    })
+  },
+
+  // ── 选格与输入 ──────────────────────────────────────────────────
+  // 落点判定（与 minesweeper 同口径）：click 自带 offsetX/offsetY → 乘实测系数 → 棋盘内坐标。
+  onBoardTap(e) {
+    if (this.dlg !== '' || this.won) return
+    var ox = e && typeof e.offsetX === 'number' ? e.offsetX : -1
+    var oy = e && typeof e.offsetY === 'number' ? e.offsetY : -1
+    if (ox < 0 || oy < 0) { haptic.invalid(); return }
+    var idx = this.hitCell(ox, oy)
+    if (idx < 0) { haptic.invalid(); return }
+    this.sel = idx
+    // 矮画布：选中格后浮出数字键盘（不占布局高度），落数即收起
+    if (this.compact) this.padOpen = true
+    haptic.place()
+    this.rebuild()
+  },
+
+  // 输入：热区内 offsetX/offsetY（client 单位）；输出：格号，或 -1（取不到系数/落在缝里）。
+  hitCell(ox, oy) {
+    var kx = this.clientKx || this.designK
+    var ky = this.clientKy || this.designK
+    if (!kx || !ky) return -1
+    var step = this.cell + this.gap
+    var x = ox * kx - 1          // 减 1：棋盘 1px 描边，内区从 1px 起算
+    var y = oy * ky - 1
+    if (x < 0 || y < 0) return -1
+    var col = Math.floor(x / step)
+    var row = Math.floor(y / step)
+    if (col >= SIZE || row >= SIZE) return -1
+    if (x - col * step >= this.cell || y - row * step >= this.cell) return -1
+    return row * SIZE + col
+  },
+
+  // 实测换算系数：设计像素 / client 单位 = 滚动视口设计尺寸 / 视口实测尺寸。
+  // 量滚动视口（尺寸固定 176×vh）而不是棋盘热区：放大档棋盘会被滚动区裁剪，
+  // 量热区可能拿到裁剪后的宽度，量视口则始终是同一把尺子。
+  measureTouch() {
+    var that = this
+    try {
+      this.$element('sudoku-scroll').getBoundingClientRect({
+        success: function (r) {
+          if (r && r.width > 0 && r.height > 0) {
+            var kx = that.vw / r.width
+            var ky = that.vh / r.height
+            if (kx >= 0.25 && kx <= 4) that.clientKx = kx
+            if (ky >= 0.25 && ky <= 4) that.clientKy = ky
+          }
+        },
+        fail: function () {}
+      })
+    } catch (e) {}
+  },
+
+  tap1() { this.inputDigit(1) },
+  tap2() { this.inputDigit(2) },
+  tap3() { this.inputDigit(3) },
+  tap4() { this.inputDigit(4) },
+  tap5() { this.inputDigit(5) },
+  tap6() { this.inputDigit(6) },
+  tap7() { this.inputDigit(7) },
+  tap8() { this.inputDigit(8) },
+  tap9() { this.inputDigit(9) },
+
+  // 输入：数字 1~9；输出：无。笔记模式只翻位掩码；普通模式落子并按行列宫冲突计一次错误。
+  inputDigit(n) {
+    if (!this.st || this.won || this.dlg !== '') return
+    if (this.sel < 0) { toastMod.toast('先选一个格子'); haptic.invalid(); return }
+    var idx = this.sel
+    if (this.st.givens[idx]) { haptic.invalid(); return }
+    if (this.st.cells[idx] === n) { this.eraseCell(); return }
+    if (this.notesMode && this.st.cells[idx] === 0) {
+      this.pushUndo()
+      this.notes[idx] = (this.notes[idx] | 0) ^ (1 << n)
+      haptic.place()
+      this.rebuild()
+      this.saveGame()
+      return
+    }
+    this.pushUndo()
+    this.st.cells[idx] = n
+    this.notes[idx] = 0
+    var state = { cells: this.st.cells, givens: this.st.givens }
+    var conflicts = sudoku.conflicts(state)
+    if (conflicts.indexOf(idx) >= 0) {
+      this.errors++
+      haptic.invalid()
+    } else {
+      haptic.place()
+    }
+    this.rebuild()
+    this.saveGame()
+    // 矮画布：落数后收起键盘，把整盘还给棋盘
+    if (this.compact) this.padOpen = false
+    if (sudoku.isComplete(state)) this.finishWin()
+  },
+
+  eraseCell() {
+    if (!this.st || this.won || this.dlg !== '') return
+    if (this.sel < 0) { haptic.invalid(); return }
+    var idx = this.sel
+    if (this.st.givens[idx]) { haptic.invalid(); return }
+    if (this.st.cells[idx] === 0 && !this.notes[idx]) { haptic.invalid(); return }
+    this.pushUndo()
+    this.st.cells[idx] = 0
+    this.notes[idx] = 0
+    haptic.place()
+    this.rebuild()
+    this.saveGame()
+    if (this.compact) this.padOpen = false
+  },
+
+  // 撤销只回退棋盘与笔记；错误数 / 提示次数不回退（避免反复试探刷提示）。
+  pushUndo() {
+    this.undo.push({ cells: this.st.cells.slice(), notes: this.notes.slice() })
+    while (this.undo.length > HISTORY_MAX) this.undo.shift()
+  },
+
+  undoMove() {
+    if (!this.st || this.won || this.dlg !== '') return
+    if (!this.undo.length) { toastMod.toast('没有可撤销的步骤'); haptic.invalid(); return }
+    var s = this.undo.pop()
+    this.st.cells = s.cells
+    this.notes = s.notes
+    haptic.place()
+    this.rebuild()
+    this.saveGame()
+  },
+
+  // 提示：优先填选中空格，否则填第一个空格；每局上限 3 次。
+  useHint() {
+    if (!this.st || this.won || this.dlg !== '') return
+    if (this.hintsUsed >= MAX_HINTS) { toastMod.toast('本局提示已用完'); haptic.invalid(); return }
+    var h = sudoku.hint(this.st, this.sel, this.st.solution)
+    if (!h) { toastMod.toast('没有可提示的空格'); haptic.invalid(); return }
+    this.pushUndo()
+    this.st.cells[h.index] = h.value
+    this.notes[h.index] = 0
+    this.hintsUsed++
+    this.sel = h.index
+    haptic.place()
+    this.rebuild()
+    this.saveGame()
+    if (sudoku.isComplete({ cells: this.st.cells, givens: this.st.givens })) this.finishWin()
+  },
+
+  toggleNotes() {
+    if (this.won || this.dlg !== '') return
+    this.notesMode = !this.notesMode
+    haptic.place()
+  },
+
+  // 缩放：适应 18px ↔ 放大 28px；放大后由 scroll 拖动查看，选中逻辑不变。
+  toggleZoom() {
+    if (this.dlg !== '') return
+    this.zoom = !this.zoom
+    this.zoomLabel = this.zoom ? '缩小' : '放大'
+    this.layout()
+    this.rebuild()
+    haptic.place()
+    var that = this
+    this.after(60, function () { that.measureTouch() })
+  },
+
+  // ── 难度与通关 ──────────────────────────────────────────────────
+  openDiff() {
+    if (this.dlg !== '') return
+    this.dlg = 'diff'
+  },
+  pickEasy() { this.chooseDiff('easy') },
+  pickNormal() { this.chooseDiff('normal') },
+  pickHard() { this.chooseDiff('hard') },
+
+  chooseDiff(d) {
+    this.dlg = ''
+    if (this.isChallenge) { toastMod.toast('挑战模式题目已固定'); return }
+    if (this.isCampaign) { toastMod.toast('闯关模式题目已固定'); return }
+    if (!this.st) return
+    this.newPuzzle(d)
+  },
+
+  closeDlg() { this.dlg = '' },
+
+  finishWin() {
+    if (this.recorded) return
+    this.recorded = true
+    this.won = true
+    this.stopTick()
+    this.timeLabel = fmt(this.sec)
+    this.winSub = '用时 ' + this.timeLabel + ' · 错误 ' + this.errors + ' 次 · 提示 ' + this.hintsUsed + ' 次'
+    // 挑战/闯关模式不覆盖普通进度存档；挑战通关后上报每日挑战。
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_sudoku')
+    } else if (this.isChallenge) {
+      economy.completeDaily('sudoku')
+    }
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: true, time: this.sec }).then(function (info) {
+        if (info && info.text) that.winSub = that.winSub + ' · ' + info.text
+      })
+    }
+    // 单人通关计入战绩（mode='solo'）：本局只写一次，未完成/清空重来不记录。
+    config.recordResult('sudoku', 'win', 'solo')
+    this.dlg = 'win'
+    haptic.celebrate()
+  },
+
+  newSame() {
+    this.dlg = ''
+    if (this.isCampaign) { this.newPuzzle(this.diff); return }
+    // 挑战模式同日同题：重置种子随机器后再按种子取题
+    if (this.isChallenge) {
+      this.dailyRng = rng.create(this.dailySeed)
+      this.newChallengePuzzle()
+      return
+    }
+    this.newPuzzle(this.diff)
+  },
+
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  back() {
+    this.dlg = ''
+    if (this.st) this.saveGame()
+    this.stopTick()
+    router.back()
+  },
+
+  // 点蒙层只关难度选择；通关弹窗要求按按钮（与 g2048/slide 一致）
+  onMask() {
+    if (this.dlg === 'diff') this.dlg = ''
+  },
+
+  noop() {}
+}
+</script>

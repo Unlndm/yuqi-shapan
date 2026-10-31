@@ -1,0 +1,397 @@
+/*
+ * pages/season 样式 — 赛季 / 棋币 / 商店；颜色全部内联绑定 Token。
+ * 度量口径与其他页一致：触摸控件高度 ≥34px；弹窗沿用 150 宽 / 按钮 130×40，
+ * 方屏（rect）切 160 宽 / 按钮 140×34（见 utils/metrics.js）。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+
+.topbar,
+.body {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse;
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮圆心 (38, 24+22) 到圆弧中心 (96,96) 须 ≤ R−r = 74；
+   24 时为 76.6（被切 2.6px），抬到 32 后为 71.6。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+/* 顶栏右侧紧凑棋币：替代原 hero 卡，避免与主页赛季卡重复 */
+.top-coins {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: bold;
+  margin-left: 8px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+.sec-label {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+  margin-left: 4px;
+}
+
+/* 任务行 / 商店行 / 皮肤行：两行文字 + 右侧按钮 */
+.task-row,
+.shop-row,
+.skin-row {
+  width: 168px;
+  height: 66px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 12px;
+  padding-right: 10px;
+  margin-bottom: 6px;
+}
+
+.task-main,
+.shop-main,
+.skin-main {
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.task-name,
+.shop-name,
+.skin-name {
+  font-size: 13px;
+  font-weight: bold;
+  line-height: 18px;
+}
+
+.task-sub,
+.shop-sub,
+.skin-sub {
+  line-height: 16px;
+  margin-top: 1px;
+}
+
+/* 任务进度条：轨道 88px，实心宽度由脚本按进度算好（px，不用百分比） */
+.task-track {
+  width: 88px;
+  height: 4px;
+  border-radius: 2px;
+  margin-top: 4px;
+}
+
+.task-fill {
+  height: 4px;
+  border-radius: 2px;
+}
+
+/* 领取 / 购买按钮：54×34（触摸目标下限），文字居中 */
+.task-btn {
+  width: 54px;
+  height: 34px;
+  line-height: 34px;
+  border-radius: 17px;
+  border-width: 1px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 每日挑战卡：标题行（玩法 + 连续天数）+ 目标文案 + 底部状态/按钮
+   （与 .task-row 同口径：surface 底色、无描边，border-color 仅沿用现有写法） */
+.daily-card {
+  width: 168px;
+  border-radius: 12px;
+  flex-direction: column;
+  padding-top: 9px;
+  padding-bottom: 10px;
+  padding-left: 12px;
+  padding-right: 12px;
+  margin-bottom: 6px;
+}
+
+.daily-top {
+  width: 144px;
+  flex-direction: row;
+  align-items: center;
+}
+
+.daily-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 19px;
+}
+
+.daily-streak {
+  font-size: 11px;
+  line-height: 16px;
+  margin-left: 6px;
+}
+
+.daily-goal {
+  width: 144px;
+  line-height: 16px;
+  margin-top: 2px;
+}
+
+.daily-foot {
+  width: 144px;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.daily-status {
+  flex: 1;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* 68×34（触摸目标下限），四字「再玩一次」也能整行放下 */
+.daily-btn {
+  width: 68px;
+  height: 34px;
+  line-height: 34px;
+  border-radius: 17px;
+  border-width: 1px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 成就入口：整行按钮（168×40，方屏 176×40） */
+.ach-entry {
+  width: 168px;
+  height: 40px;
+  border-radius: 20px;
+  border-width: 1px;
+  font-size: 13px;
+  margin-bottom: 6px;
+  background-color: transparent;
+}
+
+/* ── 购买确认弹窗 ─────────────────────────────────────────────── */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.6);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+  border-width: 1px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 24px;
+}
+
+.modal-sub {
+  margin-top: 2px;
+  margin-bottom: 10px;
+  line-height: 19px;
+  text-align: center;
+}
+
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 6px;
+    width: 176px;
+  }
+  .task-row,
+  .shop-row,
+  .skin-row,
+  .daily-card,
+  .ach-entry {
+    width: 176px;
+  }
+  .daily-top,
+  .daily-goal,
+  .daily-foot {
+    width: 150px;
+  }
+  .ach-entry {
+    height: 38px;
+  }
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+}
+
+/* 入场动效（与其他内容页统一口径：只动 opacity/transform，挂静态 class） */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：字号整体 +3~4px ──
+   行高与固定行高同步放宽；手环9（96dp）与方屏不命中。 */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .top-coins {
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .sec-label {
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .task-name,
+  .shop-name,
+  .skin-name {
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .task-sub,
+  .shop-sub,
+  .skin-sub {
+    line-height: 19px;
+  }
+  .task-btn {
+    font-size: 15px;
+  }
+  .daily-name {
+    font-size: 17px;
+    line-height: 22px;
+  }
+  .daily-streak {
+    font-size: 14px;
+    line-height: 19px;
+  }
+  .daily-goal {
+    line-height: 19px;
+  }
+  .daily-status {
+    font-size: 15px;
+    line-height: 19px;
+  }
+  .daily-btn {
+    font-size: 15px;
+  }
+  .ach-entry {
+    font-size: 16px;
+  }
+  .modal-title {
+    font-size: 21px;
+    line-height: 28px;
+  }
+  .m-btn {
+    font-size: 17px;
+  }
+}

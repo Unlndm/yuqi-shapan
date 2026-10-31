@@ -1,0 +1,1871 @@
+<!--
+  pages/game — 对局页。
+  职责：开局设置（模式/棋盘大小）+ 状态机（idle/playing/thinking/over）
+        + 全屏可拖拽棋盘 + 落子/悔棋/重开/退出。
+  - idle 态显示开局设置面板：人机/双人、可变棋盘尺寸（AI 难度按战绩匹配）。
+  - 对局中不设返回按钮：手势返回弹「继续游戏 / 回到主页(存档) / 狠心离开(弃档)」。
+  - 棋盘全屏铺满；悔棋/停手/重开/退出/缩放收进右下角「…」抽屉面板。
+  渲染层只认「棋盘几何 + 棋子列表」，规则来自 rules/*（工厂按尺寸创建）。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <!-- 开局设置面板（idle 态）：跑道屏下选项居中单列（见 game.css 的 pill-shaped 媒体查询）。
+         ⚠️ 面板内容实测约 322px（标题 42 + 两组标签/选项 136 + 三个按钮 156 ），
+         在方屏（画布高 300 / 228）上超出屏高 → 必须放进 scroll，
+         否则「玩法介绍 / 返回」被裁掉（真机表现为点不到退出）。 -->
+
+    <!-- 开始页（仅方屏）：左上返回，右侧标题；对局中不渲染，游戏界面仍用抽屉 -->
+    <div class="setup-nav" if="{{rectScreen && state === 'idle'}}">
+      <input type="button" class="setup-nav-back" value="＜"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="exit" />
+      <text class="setup-nav-title" style="color:{{t.onSurface}}">{{gameName}}</text>
+    </div>
+
+    <scroll class="panel-vp" if="{{state === 'idle'}}" scroll-y="true" bounces="true">
+      <div class="setup">
+        <text class="s-title" style="color:{{t.onSurface}}">{{gameName}}</text>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">对战模式</text>
+        <div class="chips chips-mode">
+          <div class="chip chip-mode" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{m.n}}</text>
+          </div>
+        </div>
+        <block if="{{sizes.length > 1}}">
+          <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">棋盘大小</text>
+          <div class="chips chips-size">
+            <div class="chip chip-size" for="{{(si, s) in sizes}}"
+               style="background-color:{{s.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{s.sel ? t.primaryContainer : t.outline}}"
+               @click="pickSize(si)">
+            <text class="chip-t" style="color:{{s.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{s.label}}</text>
+          </div>
+          </div>
+        </block>
+        <block if="{{mode === 'ai'}}">
+          <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">黑白执子每局随机</text>
+        </block>
+        <input type="button" class="s-start" value="继续上局" if="{{hasSave}}"
+               style="color:{{t.onSurface}};background-color:{{t.surface}};border-color:{{t.primaryContainer}}"
+               @click="continueGame" />
+        <input type="button" class="s-start" value="开始对局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="startMatching" />
+        <div class="s-secondary">
+        <input type="button" class="s-back s-half s-intro" value="玩法介绍"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="s-back s-half s-return" value="返 回"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="exit" />
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 匹配加载页（人机）：匹配成功后展示对手强度，自动进入对局 -->
+    <div class="matching" if="{{state === 'matching'}}">
+      <text class="m-title" style="color:{{t.onSurface}}">{{gameName}}</text>
+      <text class="m-mode" style="color:{{t.onSurfaceVariant}}">人机对战 · {{mode === 'ai' && sizeLabel ? sizeLabel : ''}}</text>
+      <div class="m-dots">
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 0.2 : 1}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+      </div>
+      <text class="m-status" style="color:{{t.onSurfaceVariant}}">{{matchPhase === 'done' ? '匹配成功' : '正在匹配对手…'}}</text>
+      <text class="m-diff" if="{{matchPhase === 'done'}}"
+            style="color:{{t.primary}}">对手强度 · {{matchLabel}}</text>
+      <input type="button" value="取 消" class="s-back"
+             style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+             @click="cancelMatch" />
+    </div>
+
+    <!-- 对局（playing/thinking/over）— 棋盘全屏 + 浮动控件 -->
+    <block if="{{state !== 'idle' && state !== 'matching'}}">
+      <!-- 全屏棋盘视口：原生 scroll 承载棋盘 —— 屏幕＝摄像机，拖动＝移动摄像机看棋盘。
+           场景（.stage）不小于视口：整盘可见时居中且拖不动；棋盘超出时可在舞台内滚动看局部。
+           bounces=false 把摄像机钳制在舞台边界内 —— 棋盘永远不会被拖出屏幕、不出现空白。
+           结构：舞台里放**普通流式子项**（.board，显式宽高 + 外边距定位）—— 绝不用绝对定位的
+           中间盒：该机型的运行时对绝对定位盒的 left/top/width/height 不可靠（实测被撑满并落在
+           原点，导致底板比棋盘大一圈、上下左右留白都不等）。棋盘内部（线/子）仍是绝对定位，
+           坐标就是渲染层的棋盘内坐标（不再叠加偏移）。 -->
+      <scroll class="vp" id="vp" scroll-x="true" scroll-y="true" bounces="false">
+        <div class="stage" style="width:{{stageW}}px;height:{{stageH}}px">
+          <div class="board" style="margin-left:{{boardX}}px;margin-top:{{boardY}}px;width:{{boardW}}px;height:{{boardH}}px;background-color:{{t.boardBg}}">
+            <!-- 棋盘底材（原创 AI 生成，随深/浅模式切换）。承载方式定论：
+                 **用 <image> 元件的绝对定位叶节点**，不用 background-image。
+                 依据三条实测：① `<image src="{{动态路径}}">` 在本工程真机**确实渲染**
+                 （主界面徽标、整页纹样都正常显示）；② `.board` 的 `background-image`（动态 url）
+                 真机**不渲染** —— 截图取证：棋盘呈纯底色 #44483F（绿·深配色的 boardBg）；
+                 ③ 绝对定位叶节点（与 .grid-line/.star/.stone 同类）在本机型坐标是准确的。
+                 再加 `.board { overflow: hidden }` 兜底：万一位图仍按原图物理像素渲染、大于棋盘盒，
+                 也只会被裁在盒内（恰好铺满棋盘），绝不会撑大盒子。 -->
+            <image class="board-mat" style="left:0px;top:0px;width:{{boardW}}px;height:{{boardH}}px" src="{{boardMatSrc}}"></image>
+            <div class="marker" for="{{markers}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.s}}px;height:{{$item.s}}px;border-color:{{t.lastMark}}"></div>
+            <div class="grid-line" for="{{lines}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{t.boardLine}}"></div>
+            <div class="star" for="{{stars}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{t.boardLine}}"></div>
+            <!-- 国际象棋：棋子为「圆盘+汉字」渲染（手表字体缺字，弃用 SVG image） -->
+            <block if="{{isChess}}">
+              <div class="piece" for="{{pieces}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{$item.bg}};border-color:{{$item.border}};opacity:{{dimmed ? 0.65 : 1}}">
+                <text class="piece-glyph" style="font-size:{{$item.fs}}px;color:{{$item.fg}}">{{$item.glyph}}</text>
+              </div>
+            </block>
+            <block if="{{!isChess}}">
+              <div class="stone" for="{{stones}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{$item.bg}};border-color:{{$item.border}};opacity:{{dimmed ? 0.65 : 1}}">
+                <div class="last-mark" if="{{$item.last}}"
+                     style="left:{{$item.mo}}px;top:{{$item.mo}}px;background-color:{{t.lastMark}}"></div>
+              </div>
+              <!-- 黑白棋合法落点提示（仅人类行棋时显示）：空位上一个小圆点，
+                   解决「点了没反应才知道这格不能下」的问题。 -->
+              <div class="hint" for="{{hints}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{t.primary}};opacity:0.55"></div>
+            </block>
+            <!-- 残局提示：仅高亮当前解序列的下一手目标格（不代落子）；声明在棋子之后以压在其上 -->
+            <div class="puzzle-hint" for="{{puzzleHints}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.s}}px;height:{{$item.s}}px;border-color:{{t.primary}}"></div>
+          </div>
+          <!-- 落子热区：铺满整个舞台、置于最上层（透明，仅用于点击判定）。
+               点它即落子；offsetX/offsetY 是舞台内坐标，减 (boardX, boardY) 即棋盘内坐标。 -->
+          <div class="tap-layer" id="board" style="left:0px;top:0px;width:{{stageW}}px;height:{{stageH}}px" @click="onBoardClick"></div>
+        </div>
+      </scroll>
+
+      <!-- 顶部浮层：胶囊屏「菜单」兜底出口 + 回合指示胶囊（浮层，不占棋盘布局） -->
+      <div class="status-pill">
+        <!-- 胶囊屏兜底出口：openMenu 与侧滑返回走同一条路径（呼出控制抽屉）。
+             ⚠️ 部分手环 ROM 不派发侧滑返回手势，若只有抽屉入口而没有可见按钮，玩家会卡在对局里出不来；
+             方屏有返回键/手势、且顶部让位只有 17px，故该按钮只在非方屏显示（见 game.css 的 rect 媒体查询）。 -->
+        <input type="button" class="menu-fab" value="菜单"
+               style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="openMenu" />
+        <div class="status-cap" style="background-color:{{t.surfaceContainerHigh}}">
+          <div class="dot" style="background-color:{{turnDot}};border-color:{{turnDotRing}}"></div>
+          <text class="turn-text" style="color:{{turnLabelColor}};font-size:{{fz.md}}px">{{passNote ? passNote : turnLabel}}</text>
+        </div>
+      </div>
+
+      <!-- 控制面板除侧滑返回外，另由上方「菜单」按钮呼出（见 openMenu），保证任何机型都有出口 -->
+
+      <!-- 离开对局确认（手势返回 / 抽屉退出触发）：继续游戏 / 回到主页(存档) / 狠心离开(弃档) -->
+      <div class="modal-mask" if="{{showExitConfirm}}" style="height:{{pageH}}px" @click="cancelExit">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">{{isPuzzle ? '退出残局？' : '离开对局？'}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{isPuzzle ? '本次进度不保存，可回列表重进' : '回到主页可稍后「继续上局」'}}</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="cancelExit" />
+          <input type="button" class="m-btn" value="{{isPuzzle ? '返回列表' : '回到主页'}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(true)" />
+          <input type="button" class="m-btn" value="狠心离开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(false)" />
+        </div>
+      </div>
+
+      <!-- 重开确认弹窗（防误触放弃对局） -->
+      <div class="modal-mask" if="{{showRestartConfirm}}" style="height:{{pageH}}px" @click="cancelRestart">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">重开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">当前对局已自动保存，可随时「继续上局」</text>
+          <input type="button" class="m-btn" value="继续对局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="cancelRestart" />
+          <input type="button" class="m-btn" value="重 开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="confirmRestart" />
+        </div>
+      </div>
+
+      <!-- 兵升变四选一（仅国际象棋的人类走子）：点目标格先弹此框，
+           选定后把 promo 写进走法再真正落子；AI 不经过这里，规则层缺省升后。 -->
+      <div class="modal-mask" if="{{showPromo}}" style="height:{{pageH}}px" @click="cancelPromo">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+          <text class="modal-title" style="color:{{t.onSurface}}">兵升变为？</text>
+          <div class="promo-row">
+            <text class="promo-btn" for="{{(pi, p) in promos}}"
+                  style="margin-left:{{p.ml}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                  @click="pickPromo(pi)">{{p.n}}</text>
+          </div>
+        </div>
+      </div>
+
+      <!-- 结束弹窗：结果 + 三个出口；点遮罩空白处收起查看棋盘 -->
+      <div class="modal-mask" if="{{showModal}}" style="height:{{pageH}}px" @click="hideModal">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <div class="modal-dot" style="background-color:{{turnDot}};border-color:{{turnDotRing}}"></div>
+          <text class="modal-title" style="color:{{turnLabelColor}}">{{turnLabel}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{resultReason}}</text>
+          <input type="button" class="m-btn m-primary" value="{{isPuzzle ? '重试本题' : '再来一局'}}"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="playAgain" />
+          <input type="button" class="m-btn" value="查看棋盘"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="hideModal" />
+          <input type="button" class="m-btn" value="{{isPuzzle ? '返回列表' : '返回主页'}}"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="exit" />
+        </div>
+      </div>
+
+      <!-- 认输确认（常规人机/双人；残局/闯关/每日不提供） -->
+      <div class="modal-mask" if="{{showResign}}" style="height:{{pageH}}px" @click="cancelResign">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+          <text class="modal-title" style="color:{{t.onSurface}}">认输？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">本局将判负并记入战绩</text>
+          <input type="button" class="m-btn" value="确认认输"
+                 style="color:{{t.error}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.error}}"
+                 @click="confirmResign" />
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="cancelResign" />
+        </div>
+      </div>
+
+      <!-- 控制抽屉（侧滑返回呼出）：悔棋 / 停手 / 重开 / 退出 / 缩放。
+           置于全部弹窗之后，终局弹窗展开时也能覆盖显示。 -->
+      <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+        <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+          <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+          <!-- 条目容器：胶囊屏单列（7 项 × 50 = 350，屏高 355+ 可放下）；
+               ⚠️ 方屏画布高只有 300 / 228，单列会被裁 —— rect 媒体查询里改成**双列网格**
+               （4 行 × 40 = 160，全部可见，且每格 86×36 仍 ≥34 触摸目标）。 -->
+          <div class="d-grid">
+            <input type="button" value="放大棋盘" class="d-item" disabled="{{zoomIdx >= 4}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(1)" />
+            <input type="button" value="缩小棋盘" class="d-item" disabled="{{zoomIdx <= 0}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(-1)" />
+            <input type="button" value="悔 棋" class="d-item" disabled="{{!canUndo}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuUndo" />
+            <input type="button" value="停 手" class="d-item" if="{{hasPass}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuPass" />
+            <input type="button" value="提 示" class="d-item" if="{{isPuzzle}}"
+                   style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuHint" />
+            <input type="button" value="重 试" class="d-item" if="{{isPuzzle}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuRetry" />
+            <input type="button" value="重 开" class="d-item"
+                   style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuRestart" />
+            <input type="button" value="认 输" class="d-item" if="{{!isPuzzle && !isCampaign && !isChallenge && state !== 'over'}}"
+                   style="color:{{t.error}};background-color:{{t.surfaceContainerHigh}}" @click="menuResign" />
+            <input type="button" value="退出对局" class="d-item"
+                   style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}" @click="menuExit" />
+          </div>
+        </div>
+      </div>
+    </block>
+  </div>
+</template>
+
+<style>
+@import './game.css';
+</style>
+
+<script>
+/**
+ * 对局页脚本。
+ * 棋盘平移＝框架原生 scroll（屏幕＝摄像机、棋盘＝舞台）：页面不再自己算平移量，
+ * 也因此不再需要手指死区、也不再需要抑制「侧滑返回」。
+ * 落子坐标：.tap-layer 的 click 事件自带 offsetX/offsetY —— 官方定义为「距离事件触发
+ * 对象左边沿的距离」，而热区左边沿就是棋盘左边沿，故它直接就是棋盘内坐标，且与滚动
+ * 位置无关（相对元素本身）。其单位与 clientX/Y 同源，官方未规定单位制，故用
+ * getBoundingClientRect 实测视口尺寸反推换算系数（设计像素 / client 单位）：
+ *   kx = 192 / 视口实测宽，ky = 视口设计高 / 视口实测高
+ * 取不到 rect 时回退 designK（192/屏宽dp，见 utils/screen.js）。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var economy = global.YQ.economy
+var BoardGeometry = global.YQ.BoardGeometry
+var renderer = global.YQ.boardRenderer
+var ai = global.YQ.ai
+var rulesReg = require('../../rules/index.js')
+var screen = global.YQ.screen
+var rng = global.YQ.rng
+var puzzles = require('../../puzzles/index.js')
+var storage = global.YQ.storage
+var toastMod = global.YQ.toast
+
+var PAD = 10       // 棋盘几何留白
+var UNDO_MAX = 30  // 悔棋栈深度上限
+var TAP_DEBOUNCE = 300
+// 顶部「回合提示」胶囊的让位量（设计像素）：胶囊 = top 4px + 高 20px → 底边 24；
+// 棋盘内首行距棋盘顶 9px（PAD-1），故棋盘上偏移至少 15，取 17 留 2px 余量。
+// 用户反馈「提示挡住了棋盘最上排」，故棋盘纵向偏移改用 max(居中, 17)。
+var PILL_CLEAR = 17
+// 胶囊屏（跑道屏）顶部安全区：短边是半圆，外接圆半径 R ≈ 屏宽/2 = 96（设计像素）。
+// 在高度 y 处，屏幕可见区的左右边界是 xmin = R − √(R² − (R − y)²) —— 越靠两端可见高度越低。
+// ⚠️ 玩家真机截图取证：顶部浮层按 top 4px 放置时**整行都在这个圆弧之外**（按钮被屏幕切掉）。
+// 顶部浮层「菜单 44 + 间距 6 + 回合胶囊约 90」≈ 140 宽、居中 → 左端 x = 26；代入上式得 y ≥ 30.3
+// → game.css 里胶囊屏取 top 32px。菜单按钮 2026-10-23 由 20 高加到 34（触摸目标下限），
+// 浮层底边 = 32 + 34 = 66，故棋盘上偏移 = 66 + 3 − 9 = 60（浮层底边留 3px 余量，棋盘内首行距顶 9px）。
+var PILL_CLEAR_CAPSULE = 60
+// AI 最短思考时间（ms）：玩家感知上 AI 在「想」，而非瞬间回应；另加随机抖动
+var THINK_BASE = { easy: 600, normal: 900, hard: 1200 }
+// 胜负原因播报（棋类固定文案；象棋/围棋由规则层给出）
+var WIN_REASONS = { gomoku: '五子连珠', tictactoe: '三连成线', othello: '终局子多者胜', connect4: '四子连珠' }
+var DRAW_REASONS = { gomoku: '盘满和棋', tictactoe: '盘满和棋', othello: '双方子数持平', connect4: '盘满和棋' }
+// 残局：首次完成奖励与防守方「题目最优应手」的出手延迟（ms）
+var PUZZLE_REWARD = 60
+var PUZZLE_THINK = 420
+
+export default {
+  data: {
+    type: '',                // 路由参数：棋种 id（必须在 data 声明，框架才会注入）
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子（同日同玩法恒定）
+    puzzleId: '',            // 路由参数：残局题目 id（如 chess-01；必须在 data 声明）
+    campaignId: '',          // 路由参数：闯关关卡 id（如 c1-01；普通对局为空）
+    campaignDiff: '',        // 路由参数：闯关指定难度（easy|normal|hard）
+    campaignMode: '',        // 路由参数：闯关指定模式（ai|solo）
+    isPuzzle: false,         // 残局模式（不可悔出题面、防守按题解应手）
+    puzzleHints: [],         // 残局提示高亮（当前解序列下一手的目标格）
+    t: themeMod.current(),
+    boardMatSrc: themeMod.currentBoardBg(),  // 棋盘底材（按深/浅模式取图）
+    gameName: '',
+    state: 'idle',           // idle(开局设置)|playing|thinking|over
+    mode: 'ai',              // 'ai' 人机 | 'pvp' 双人
+    sizeIdx: 0,
+    sizeLabel: '',
+    matchLabel: '',          // 匹配到的对手强度（匹配加载页展示）
+    matchedDifficulty: 'normal',
+    matchPhase: 'loading',   // matching 态子阶段：loading → done
+    breathOn: true,          // 匹配呼吸点相位
+    modes: [],               // [{v,n,sel}]
+    sizes: [],               // [{label,sel}]
+    turnLabel: '',
+    passNote: '',            // 轮空提示（黑白棋单方无子可走时临时盖住回合文字，见 doMove）
+    turnLabelColor: '',
+    turnDot: '',
+    turnDotRing: '',
+    vpW: 192,
+    vpH: 490,
+    pageH: 490,
+    rectScreen: false,
+    fz: config.fontTokens('normal'),
+    uiS: 1,                  // UI 收敛系数（方屏按官方矩形设计稿比例缩小，见 utils/screen.js）
+    pillScreen: true,         // 是否胶囊屏（跑道屏）：决定顶部浮层的安全区让位（见 PILL_CLEAR_CAPSULE）
+    fontSizeName: 'normal',  // 字号档位（与 uiS 一起换算出 fz）
+    hasSave: false,          // 是否存在可「继续上局」的快照
+    zoomIdx: 1,              // 缩放档位（zoomSteps 下标）
+    zoomSteps: [0.8, 1, 1.25, 1.5, 2],
+    boardW: 0,
+    boardH: 0,
+    boardX: 0,               // 棋盘在舞台内的居中偏移（脚本算出 + 绝对定位，不用 flex 居中）
+    boardY: 0,
+    stageW: 192,             // 舞台包围盒宽 = max(视口宽, 棋盘宽)
+    stageH: 490,             // 舞台包围盒高 = max(视口高, 棋盘高)
+    lines: [],
+    stars: [],
+    stones: [],
+    hints: [],               // 黑白棋合法落点提示（空位小圆点；仅人类行棋时非空）
+    pieces: [],              // 国际象棋棋子（SVG data-uri）
+    markers: [],             // 最后一手起止格描边（国际象棋）
+    isChess: false,
+    hasPass: false,          // 围棋等支持停一手
+    canUndo: false,
+    dimmed: false,
+    showModal: false,        // 结束弹窗开关（state 仍为 over，可收起复盘）
+    resultReason: '',
+    showExitConfirm: false,
+    showRestartConfirm: false,
+    showResign: false,      // 认输确认（常规人机/双人）
+    showPromo: false,        // 兵升变选择弹窗（国际象棋）
+    promoMove: null,         // 待升变的走法（选定后写入 promo 再落子）
+    promos: [                // 升变选项：v 对应 rules/chess.js 的棋子类型（1马 2象 3车 4后）；ml 为首行间距
+      { n: '后', v: 4, ml: 0 },
+      { n: '车', v: 3, ml: 3 },
+      { n: '象', v: 2, ml: 3 },
+      { n: '马', v: 1, ml: 3 }
+    ],
+    showMenu: false,         // 右下角「…」抽屉面板开关
+    lastUndoTime: 0
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    // 残局参数：只带 puzzleId 时从题库反推棋种，避免调用方漏传 type
+    var puzzle = this.puzzleId ? puzzles.getPuzzle(this.puzzleId) : null
+    if (puzzle && !this.type) this.type = puzzle.game
+    // 路由参数校验：缺失或非法 → 跳回主界面，不白屏
+    this.game = config.getGame(this.type)
+    if (!this.game || !this.game.enabled) {
+      router.replace({ uri: 'pages/index' })
+      return
+    }
+    this.gameName = this.game.name
+    // 首帧先按默认 mode/size 铺好选项；异步设置回来后再校正（避免闪一帧空面板）
+    this.syncSetupUI()
+
+    // 残局模式：与每日挑战互斥（残局优先）；普通对局 isPuzzle 为 false，行为不变。
+    this.isPuzzle = !!(puzzle && puzzle.game === this.game.id)
+    this.puzzle = this.isPuzzle ? puzzle : null
+    this.puzzlePending = this.isPuzzle
+    this.puzzleLayoutReady = false
+    this.puzzleCfgReady = false
+    this.puzzleStarted = false
+
+    // 每日挑战：种子驱动执子随机；挑战模式强制人机 / 普通难度 / 跳过匹配页。
+    // 普通对局不创建 RNG（this.dailyRng 为 null），行为与原先完全一致。
+    this.isChallenge = !this.isPuzzle && Number(this.challenge) === 1
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, this.game.id)
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.challengePending = this.isChallenge
+    this.challengeLayoutReady = false
+    this.challengeCfgReady = false
+
+    // 闯关模式：与残局/每日互斥。强制人机、关卡指定难度、首档棋盘（关卡数据不含尺寸）。
+    this.isCampaign = !this.isPuzzle && !this.isChallenge && !!this.campaignId
+    this.campaignDiffName = this.campaignDiff === 'easy' || this.campaignDiff === 'hard'
+      ? this.campaignDiff : 'normal'
+    if (this.isCampaign) this.challengePending = true
+    this.moveCount = 0
+
+    // 非响应式内部状态
+    this.settings = config.DEFAULT_SETTINGS
+    this.rules = null
+    this.geo = null
+    this.board = null
+    this.history = []
+    this.lastMove = null
+    this.lastTapTime = 0
+    this.aiTimer = null
+    this.aiGen = 0        // 思考代次：每次重新排程自增，用于废弃上一次搜索的迟到结果
+    this.matchTimer = null
+    this.breathTimer = null
+    this.designK = 2       // 兜底换算：192/屏宽dp（getBoundingClientRect 不可用时）
+    this.clientKx = 0      // 实测换算：192/视口实测宽（官方 API，优先）
+    this.clientKy = 0      // 实测换算：视口设计高/视口实测高
+
+    var that = this
+    Promise.all([
+      config.loadSettings(),
+      config.getPref('mode', 'ai'),
+      config.getPref('size_' + this.type, 0)
+    ]).then(function (vals) {
+      that.settings = vals[0]
+      // 判重：没换主题/字号/皮肤就不重设（整页重绑 = 空白帧）；棋盘底材由 applyTheme 一并更新
+      config.applyTheme(that, vals[0])
+      that.fontSizeName = vals[0].fontSize
+      that.syncFonts()
+      haptic.applySettings(vals[0])
+      // 挑战/残局/闯关模式强制人机；闯关难度取自关卡数据
+      that.mode = (that.isChallenge || that.isPuzzle || that.isCampaign) ? 'ai' : (vals[1] === 'pvp' ? 'pvp' : 'ai')
+      if (that.isCampaign) that.matchedDifficulty = that.campaignDiffName
+      else if (that.isChallenge || that.isPuzzle) that.matchedDifficulty = 'normal'
+      var idx = (that.isChallenge || that.isPuzzle || that.isCampaign) ? 0 : parseInt(vals[2], 10)
+      that.sizeIdx = idx >= 0 && idx < that.game.sizes.length ? idx : 0
+      that.syncSetupUI()
+      that.challengeCfgReady = true
+      that.beginChallengeIfReady()
+      that.puzzleCfgReady = true
+      that.beginPuzzleIfReady()
+    })
+    this.measureScreen()
+  },
+
+  // 侧滑/返回：对局中呼出控制抽屉（不再直接弹离开确认）；idle/matching 放行。
+  // 棋盘平移已交给框架原生 scroll，本页再无自定义拖动可吞手势，故不做任何抑制：
+  // 对局中一律呼出控制抽屉，保证手势一定触发、退出一定可达。
+  onBackPress() {
+    if (this.showPromo) { this.cancelPromo(); return true }
+    if (this.state === 'playing' || this.state === 'thinking' || this.state === 'over') {
+      this.openMenu()
+      return true
+    }
+    return false
+  },
+
+  // 顶部「菜单」按钮（仅非方屏显示）：与侧滑返回同一条路径 —— 部分手环不派发返回手势，
+  // 这是那些机型唯一的出口（抽屉里才有「退出对局」）。
+  openMenu() { this.showMenu = true },
+
+  // ── 控制抽屉（侧滑返回呼出） ────────────────────────────────────
+  closeMenu() { this.showMenu = false },
+  noop() {}, // 抽屉内部点击：吞掉冒泡，避免误关面板
+  menuZoom(dir) { if (dir > 0) this.zoomIn(); else this.zoomOut() },
+  menuUndo() { this.closeMenu(); this.undo() },
+  menuPass() { this.closeMenu(); this.passTurn() },
+  // 残局：提示只高亮下一手；重试恢复题面（两者都不自动落子/不判负）
+  menuHint() { this.closeMenu(); this.showPuzzleHint() },
+  menuRetry() { this.closeMenu(); this.retryPuzzle() },
+  menuRestart() { this.closeMenu(); this.restart() },
+  menuResign() { this.closeMenu(); if (this.state === 'playing' || this.state === 'thinking') this.showResign = true },
+  cancelResign() { this.showResign = false },
+  confirmResign() {
+    this.showResign = false
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.aiGen++
+    // 人类认输：对手获胜；走常规 endGame 记录胜负与棋币
+    this.endGame({ result: 'win', winner: 3 - this.humanColor, reason: '认输' })
+  },
+  menuExit() { this.closeMenu(); this.showExitConfirm = true },
+
+  onShow() {
+    screen.keepScreenOn(true)
+    var that = this
+    config.getPref('save_' + this.type, null).then(function (v) {
+      if (v && v.board && v.board.length) this.hasSave = true
+    }.bind(this))
+    config.loadSettings().then(function (s) {
+      that.settings = s
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      // 判重由 applyTheme 负责：主题/皮肤都没变时一个绑定都不碰（重绑整页会闪）
+      var themed = config.applyTheme(that, s)
+      // 底材/棋子 Token 已由 applyTheme 更新 → 对局中重渲染一次，让新皮肤立刻生效
+      if (themed && that.board && that.state !== 'idle') that.renderAll()
+    })
+  },
+
+  onHide() {
+    screen.keepScreenOn(false)
+  },
+
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.aiGen++          // 作废可能在途的搜索，避免页面销毁后仍回写落子
+    this.clearPassNote()
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    if (this.matchTimer) {
+      clearTimeout(this.matchTimer)
+      this.matchTimer = null
+    }
+    if (this.breathTimer) {
+      clearInterval(this.breathTimer)
+      this.breathTimer = null
+    }
+    this.history = null
+  },
+
+  // ── 开局设置面板 ────────────────────────────────────────────────
+
+  // 按当前选择刷新三组 chip 的 sel 标志（模板只用简单布尔绑定）。
+  syncSetupUI() {
+    var modes = []
+    for (var i = 0; i < config.MODES.length; i++) {
+      modes.push({ v: config.MODES[i].v, n: config.MODES[i].n, sel: config.MODES[i].v === this.mode })
+    }
+    this.modes = modes
+    var sizes = []
+    for (var k = 0; k < this.game.sizes.length; k++) {
+      sizes.push({ label: this.game.sizes[k].label, sel: k === this.sizeIdx })
+    }
+    this.sizes = sizes
+  },
+
+  // ── 匹配流程（人机） ────────────────────────────────────────────
+  // 开始对局 → 匹配加载页（呼吸点演出 900~1600ms，期间按战绩完成匹配）
+  // → 展示「匹配成功 · 对手强度」900ms → 自动进入对局。双人模式无匹配直接开局。
+
+  // 开始匹配：持久化选择，切到 matching 态，驱动两段定时器。
+  startMatching() {
+    // 挑战/闯关模式没有匹配页：直接按关卡条件开局
+    if (this.isChallenge || this.isCampaign) {
+      this.mode = 'ai'
+      this.matchedDifficulty = this.isCampaign ? this.campaignDiffName : 'normal'
+      this.sizeIdx = 0
+      this.beginGame()
+      return
+    }
+    config.saveSetting('mode', this.mode)
+    config.saveSetting('size_' + this.game.id, this.sizeIdx)
+    if (this.mode !== 'ai') {
+      this.beginGame()
+      return
+    }
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.state = 'matching'
+    this.matchPhase = 'loading'
+    this.matchLabel = ''
+    this.sizeLabel = this.game.sizes[this.sizeIdx].label
+    var that = this
+    // 呼吸点：500ms 相位翻转，opacity transition 呼吸（禁旋转动画）
+    if (this.breathTimer) clearInterval(this.breathTimer)
+    this.breathTimer = setInterval(function () {
+      that.breathOn = !that.breathOn
+    }, 500)
+    // 先按战绩发起匹配（storage 很快会先完成），演出时长到点再揭晓
+    config.matchDifficulty(this.game.id).then(function (d) {
+      that.matchedDifficulty = d
+    })
+    var delay = 900 + Math.floor(Math.random() * 700)
+    this.matchTimer = setTimeout(function () {
+      that.matchPhase = 'done'
+      that.matchLabel = that.matchedDifficulty === 'easy' ? '简单'
+        : that.matchedDifficulty === 'hard' ? '困难' : '普通'
+      haptic.place() // 匹配成功反馈
+      that.matchTimer = setTimeout(function () {
+        that.matchTimer = null
+        if (that.state !== 'matching') return // 已取消/退出
+        that.stopBreath()
+        that.beginGame()
+      }, 900)
+    }, delay)
+  },
+
+  // 取消匹配：清理定时器回到开局面板。
+  cancelMatch() {
+    this.stopBreath()
+    if (this.matchTimer) {
+      clearTimeout(this.matchTimer)
+      this.matchTimer = null
+    }
+    this.state = 'idle'
+  },
+
+  stopBreath() {
+    if (this.breathTimer) {
+      clearInterval(this.breathTimer)
+      this.breathTimer = null
+    }
+  },
+
+  // 输入：模式选项下标；输出：无。
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m || this.mode === m.v) return
+    this.mode = m.v
+    this.syncSetupUI()
+  },
+
+  // 输入：棋盘尺寸下标；输出：无。
+  pickSize(si) {
+    if (si < 0 || si >= this.sizes.length) return
+    this.sizeIdx = si
+    this.syncSetupUI()
+  },
+
+  // 恢复上局快照：误触退出后无损回到对局（悔棋栈不保留，见 TODO）。
+  continueGame() {
+    var that = this
+    config.getPref('save_' + this.game.id, null).then(function (snap) {
+      if (!snap || !snap.board) {
+        that.hasSave = false
+        return
+      }
+      that.mode = snap.mode === 'pvp' ? 'pvp' : 'ai'
+      that.sizeIdx = snap.sizeIdx || 0
+      that.matchedDifficulty = snap.difficulty || 'normal'
+      that.sizeLabel = that.game.sizes[that.sizeIdx].label
+      that.syncSetupUI()
+      that.restoreFrom(snap)
+      config.clearPref('save_' + that.game.id)
+      that.hasSave = false
+    })
+  },
+
+  // 输入：快照对象；输出：无。按快照重建几何与状态并进入对局。
+  restoreFrom(snap) {
+    var size = this.game.sizes[this.sizeIdx]
+    this.baseCell = size.cell
+    this.rules = rulesReg.get(this.game.id, size.cols, size.rows)
+    // 一局一个“大脑”：人格 / 情绪 / 记忆 / 疲劳随本局规则实例走；
+    // 新局重新 create，不把上一局的情绪带进来。
+    if (this.mode === 'ai') {
+      this.aiMind = ai.createMind(this.matchedDifficulty)
+      this.rules.__mind = this.aiMind
+    } else {
+      this.aiMind = null
+    }
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.board = snap.board
+    this.turn = snap.turn
+    this.lastMove = snap.lastMove
+    this.humanColor = snap.humanColor
+    this.aiColor = 3 - this.humanColor
+    this.passStreak = snap.passStreak || 0
+    this.history = []
+    this.clearPassNote()
+    this.cancelPromo()
+    this.state = 'playing'
+    this.canUndo = false
+    this.renderAll()
+    this.layoutBoard()
+    this.updateTurnUI()
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+    this.scheduleMeasure()
+  },
+
+  // 对局快照：每手落子后写入（误触退出后可恢复；悔棋栈不持久化）。
+  saveSnapshot() {
+    var snap = {
+      board: this.board,
+      turn: this.turn,
+      lastMove: this.lastMove,
+      humanColor: this.humanColor,
+      sizeIdx: this.sizeIdx,
+      mode: this.mode,
+      passStreak: this.passStreak,
+      difficulty: this.matchedDifficulty
+    }
+    config.saveSetting('save_' + this.game.id, snap)
+  },
+
+  // 按面板选择创建规则/几何实例并开始对局；选择持久化。
+  beginGame() {
+    var size = this.game.sizes[this.sizeIdx]
+    this.baseCell = size.cell
+    this.rules = rulesReg.get(this.game.id, size.cols, size.rows)
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+
+    // 挑战/闯关模式：不覆盖玩家的模式/棋盘偏好
+    if (!this.isChallenge && !this.isCampaign) {
+      config.saveSetting('mode', this.mode)
+      config.saveSetting('size_' + this.game.id, this.sizeIdx)
+    }
+
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    // 挑战/闯关模式不清普通对局存档（避免进挑战就把普通进度删掉）
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_' + this.game.id)
+      this.hasSave = false
+    }
+    this.board = this.rules.init()
+    this.history = []
+    this.moveCount = 0
+    this.lastMove = null
+    this.passStreak = 0
+    this.isChessMode = this.game.id === 'chess'
+    this.hasPassMode = this.rules.PASS_OK === true
+    // 执黑执白每局随机（spec：不自己选黑白手）；挑战模式用种子 RNG，同日同局执子相同
+    this.humanColor = this.dailyRng ? (this.dailyRng.int(2) + 1)
+      : (Math.random() < 0.5 ? 1 : 2)
+    this.aiColor = 3 - this.humanColor
+    this.turn = 1 // 黑先行
+    this.clearPassNote()
+    this.cancelPromo()
+    this.state = 'playing'
+    this.canUndo = false
+    this.isChess = this.isChessMode
+    this.hasPass = this.hasPassMode
+    this.renderAll()
+    this.layoutBoard()
+    this.updateTurnUI()
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+    this.scheduleMeasure()
+  },
+
+  // ── 残局模式 ────────────────────────────────────────────────────
+  // 题目自带 board / turn / moveLimit / solution；对局页只负责「按题面摆局 + 校验解题着 +
+  // 按题解应手 + 记录完成/最佳步数」，不改题库数据，也不写入普通对局的存档与战绩。
+
+  // 由题目初始化：几何与规则按题面尺寸创建，跳过开局面板/匹配，直接进入 playing。
+  beginPuzzle() {
+    var p = this.puzzle
+    if (!p) return
+    var dims = this.puzzleDims(p)
+    this.puzzleSize = this.pickPuzzleSize(dims.cols, dims.rows)
+    this.baseCell = this.puzzleSize.cell
+    this.rules = rulesReg.get(p.game, dims.cols, dims.rows)
+    if (!this.rules) {
+      router.replace({ uri: 'pages/index' })
+      return
+    }
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.aiGen++
+    this.isPuzzle = true
+    this.puzzleStarted = true
+    this.board = p.board.map(function (row) { return row.slice() })
+    this.history = []
+    this.lastMove = null
+    this.passStreak = 0
+    this.isChessMode = p.game === 'chess'
+    this.hasPassMode = false
+    this.humanColor = p.turn === 2 ? 2 : 1
+    this.aiColor = 3 - this.humanColor
+    this.turn = this.humanColor
+    this.puzzleStep = 0
+    this.puzzleOwnMoves = 0
+    this.puzzleState = 'play'
+    this.puzzleHints = []
+    if (this.rules.setKo) this.rules.setKo(null) // 围棋劫点不能跨题残留
+    this.clearPassNote()
+    this.cancelPromo()
+    this.showModal = false
+    this.showRestartConfirm = false
+    this.state = 'playing'
+    this.canUndo = false
+    this.isChess = this.isChessMode
+    this.hasPass = false
+    this.renderAll()
+    this.layoutBoard()
+    this.updateTurnUI()
+    this.scheduleMeasure()
+  },
+
+  // 输入：题目；输出：规则层棋盘尺寸（象棋 board 多一行元数据，行数要减 1）。
+  puzzleDims(p) {
+    var rows = p.board.length
+    if (p.game === 'chess' && rows > 1) rows--
+    return { cols: p.board[0].length, rows: rows }
+  },
+
+  // 输入：列/行；输出：{cols, rows, cell}。优先沿用棋种现有尺寸档的 cell。
+  pickPuzzleSize(cols, rows) {
+    for (var i = 0; i < this.game.sizes.length; i++) {
+      var s = this.game.sizes[i]
+      if (s.cols === cols && s.rows === rows) {
+        return { cols: cols, rows: rows, cell: s.cell }
+      }
+    }
+    return { cols: cols, rows: rows, cell: cols >= 9 ? 26 : 30 }
+  },
+
+  // ── 布局与屏幕适配 ──────────────────────────────────────────────
+
+  // 读取屏幕布局（多屏适配）：设计像素高度 = 屏高 × (192/屏宽)，与单位制无关。
+  measureScreen() {
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      that.rectScreen = l.profile === 'rect'
+      that.designK = l.scale
+      that.uiS = l.uiScale
+      that.pillScreen = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3（随后 syncFonts 重算）
+      that.syncFonts()
+      // 棋盘视口铺满整页（无顶栏/底栏）
+      that.vpW = 192
+      that.vpH = Math.max(120, l.designH)
+      that.syncStage()
+      that.measureTouch()
+      that.challengeLayoutReady = true
+      that.beginChallengeIfReady()
+      that.puzzleLayoutReady = true
+      that.beginPuzzleIfReady()
+    })
+  },
+
+  // 挑战就绪（布局 + 设置都拿到）后直接开局，跳过开局面板与匹配演出。
+  beginChallengeIfReady() {
+    if (!this.challengePending || !this.challengeLayoutReady || !this.challengeCfgReady) return
+    this.challengePending = false
+    this.beginGame()
+  },
+
+  // 残局就绪（布局 + 设置都拿到）后直接进入题目：跳过开局面板与匹配演出。
+  beginPuzzleIfReady() {
+    if (!this.puzzlePending || !this.puzzleLayoutReady || !this.puzzleCfgReady) return
+    this.puzzlePending = false
+    this.beginPuzzle()
+  },
+
+  // 实测换算系数：offsetX/offsetY 与 clientX/Y 同单位，用视口实测尺寸反推
+  //   设计像素/client 单位 = 设计尺寸 / 实测尺寸
+  // 视口设计尺寸是已知常量（宽恒为 192、高为 designH），故无需假设单位制
+  // （dp / 设计像素 / 物理像素都能对上）；调用失败则沿用 designK。
+  measureTouch() {
+    var that = this
+    try {
+      this.$element('vp').getBoundingClientRect({
+        success: function (r) {
+          // 合理性校验：换算系数应在 0.25~4 之间（1 个设计像素对应的 client 单位）。
+          // 超出范围说明 rect 与事件坐标系不同源，宁可丢弃回退 designK，也不要用错值把落点算偏。
+          if (r && r.width > 0 && r.height > 0) {
+            var kx = that.vpW / r.width
+            var ky = that.vpH / r.height
+            if (kx >= 0.25 && kx <= 4) that.clientKx = kx
+            if (ky >= 0.25 && ky <= 4) that.clientKy = ky
+          }
+        },
+        fail: function () {}
+      })
+    } catch (e) {}
+  },
+
+  // 进入对局时视口才渲染，等一帧后：补测换算系数 + 把摄像机对准棋盘中心（多次重试）。
+  // 数据改动到渲染是异步的，故不能在 beginGame 里同步 scrollTo —— 那时 scroll 还没渲染出来，
+  // 调用会被 try/catch 静默丢掉；另外内容尺寸稳定也可能晚于首次调用，故补几次重试。
+  scheduleMeasure() {
+    var that = this
+    setTimeout(function () { that.measureTouch() }, 80)
+    var delays = [100, 400, 900]
+    for (var i = 0; i < delays.length; i++) {
+      (function (d) {
+        setTimeout(function () {
+          that.measureTouch()
+          that.layoutBoard()
+        }, d)
+      })(delays[i])
+    }
+  },
+
+  // 字号随屏型收敛：fz 走内联绑定，CSS 媒体查询覆盖不到，必须在此换算
+  syncFonts() {
+    var b = config.fontTokens(this.fontSizeName, this.fontBump || 0)
+    var s = this.uiS
+    this.fz = { md: Math.max(9, Math.round(b.md * s)), sm: Math.max(8, Math.round(b.sm * s)) }
+  },
+
+  // 生成几何实例：cell = 基准格距 × UI 收敛系数 × 缩放系数，钳制 21~60。
+  // 不按视口缩格子（棋盘可以比屏幕大）；超出部分靠舞台（.stage）滚动查看，
+  // 边界由 scroll 组件钳制 —— 棋盘不会像旧版那样被拖出屏幕、露出空白。
+  makeGeo() {
+    var size = this.puzzleSize || this.game.sizes[this.sizeIdx]
+    var z = this.zoomSteps[this.zoomIdx]
+    var cell = Math.max(21, Math.min(60, Math.round(size.cell * this.uiS * z)))
+    return new BoardGeometry({
+      cols: size.cols,
+      rows: size.rows,
+      cell: cell,
+      mode: this.game.mode,
+      pad: PAD
+    })
+  },
+
+  zoomIn() {
+    if (this.zoomIdx >= this.zoomSteps.length - 1) return
+    this.zoomIdx++
+    this.rebuildBoard()
+  },
+
+  zoomOut() {
+    if (this.zoomIdx <= 0) return
+    this.zoomIdx--
+    this.rebuildBoard()
+  },
+
+  // 缩放后重建几何与视图模型；保持最后一手（或棋盘整体）居中。
+  rebuildBoard() {
+    if (!this.board) return
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+    this.renderAll()
+    // 残局缩放后提示框坐标要跟着几何重算（旧坐标会落在错误格）
+    if (this.isPuzzle && this.puzzleHints.length) this.showPuzzleHint()
+    if (this.lastMove && !this.lastMove.pass) {
+      this.centerOn(this.lastMove.i, this.lastMove.j)
+    } else {
+      this.layoutBoard()
+    }
+  },
+
+  // 舞台包围盒与棋盘偏移。横向：棋盘在舞台内居中（棋盘更宽时偏移为 0，靠摄像机滚动看局部）。
+  // 纵向：偏移取 max(居中, 顶部让位) —— 整盘可见时居中；棋盘很高时也要让开顶部浮层
+  // （它对棋盘最上排是压着的，用户反馈挡住）。让位量按屏型取：胶囊屏浮层被安全区抬到
+  // top 32px + 高 34（菜单按钮加高后），对应让位 60；方屏浮层仍在 top 4px，对应 17。
+  // 舞台高 = 上偏移 + 棋盘 + 对称下留白，且不小于视口。
+  syncStage() {
+    this.stageW = Math.max(this.vpW, this.boardW)
+    var centered = Math.round((this.vpH - this.boardH) / 2)
+    if (centered < 0) centered = 0
+    this.boardX = Math.round((this.stageW - this.boardW) / 2)
+    this.boardY = Math.max(centered, this.pillScreen ? PILL_CLEAR_CAPSULE : PILL_CLEAR)
+    this.stageH = Math.max(this.vpH, this.boardY + this.boardH + centered)
+  },
+
+  // 摄像机对准棋盘中心（越界由 scroll 组件钳制）。
+  // ⚠️ 必须把上偏移 padY 一起算进去：舞台里棋盘不在 y=0 处（胶囊屏要让开顶部浮层）。
+  // 旧写法只取 (boardH-vpH)/2，整盘比屏幕高时会把上偏移「滚掉」——棋盘首行压在顶部胶囊下、
+  // 底部却多出等量空白。让位量从 44 提到 60 后这个偏差更明显，故一并修正。
+  layoutBoard() {
+    this.scrollBoard((this.boardW - this.vpW) / 2, this.padY() + (this.boardH - this.vpH) / 2, true)
+  },
+
+  // 棋盘在舞台内的居中偏移（＝绑定的 boardX/boardY，供摄像机坐标换算用）
+  padX() { return this.boardX },
+  padY() { return this.boardY },
+
+  // 移动摄像机：把滚动窗口移到指定「舞台内坐标」（instant=true 时不做平滑动画）。
+  // 负数与越界都由 scrollTo 钳制。
+  scrollBoard(left, top, instant) {
+    try {
+      this.$element('vp').scrollTo({
+        left: Math.max(0, Math.round(left)),
+        top: Math.max(0, Math.round(top)),
+        behavior: instant ? 'auto' : 'smooth'
+      })
+    } catch (e) {}
+  },
+
+  // 落子后把目标点移到视口中央；棋盘整体可见时目标偏移为负 → 钳到 0（不动）。
+  centerOn(i, j) {
+    var p = this.geo.pos(i, j)
+    this.scrollBoard(this.padX() + p.x - this.vpW / 2, this.padY() + p.y - this.vpH / 2)
+  },
+
+  // ── 渲染同步 ────────────────────────────────────────────────────
+
+  renderAll() {
+    this.lines = renderer.buildGridLines(this.geo)
+    this.stars = renderer.buildStars(this.geo, this.rules.STARS)
+    this.renderStones()
+  },
+
+  // 渲染分支：国际象棋渲染「圆盘+汉字」棋子 + 起止标记，其余棋种渲染圆形棋子。
+  renderStones() {
+    if (this.isChessMode) {
+      this.pieces = renderer.buildPieceDiscs(this.board, this.geo, this.lastMove, this.t)
+      this.markers = renderer.buildMarkers(this.geo, this.lastMove)
+      this.stones = []
+    } else {
+      this.stones = renderer.buildStones(this.board, this.geo, this.lastMove, this.t)
+      this.markers = []
+      this.pieces = []
+    }
+  },
+
+  // 黑白棋合法落点提示：仅在人类行棋时计算（AI 思考 / 终局时清空）。
+  // 提示只是视觉辅助，不改变任何落子逻辑（非法点仍由 matchMove 拒绝并震动）。
+  syncHints() {
+    if (!this.game || this.game.id !== 'othello' || !this.board || this.state !== 'playing') {
+      this.hints = []
+      return
+    }
+    if (this.mode === 'ai' && this.turn !== this.humanColor) {
+      this.hints = []
+      return
+    }
+    var ms = this.rules.moves(this.board, this.turn)
+    var d = Math.max(4, Math.round(this.geo.stoneD * 0.22))
+    var out = []
+    for (var k = 0; k < ms.length; k++) {
+      var c = this.geo.pos(ms[k].i, ms[k].j)
+      out.push({ x: Math.round(c.x - d / 2), y: Math.round(c.y - d / 2), d: d })
+    }
+    this.hints = out
+  },
+
+  // 回合指示与 thinking 提示集中更新；国际象棋被将军时追加提示。
+  updateTurnUI() {
+    this.syncHints()
+    this.dimmed = this.state === 'thinking'
+    // 残局：胶囊显示「目标 · 已用步数/上限」，应手阶段提示这是题目的最优应手
+    if (this.isPuzzle) {
+      if (this.state === 'playing' || this.state === 'thinking') this.updatePuzzleStatus()
+      return
+    }
+    if (this.state !== 'playing' && this.state !== 'thinking') return
+    var colorName = this.turn === 1 ? '黑方' : '白方'
+    // 将军提示：仅对当前行棋方被将军时追加（国际象棋）
+    var suffix = ''
+    if (this.isChessMode && this.board && this.rules.inCheck(this.board, this.turn)) {
+      suffix = ' · 将军！'
+    }
+    if (this.state === 'thinking') {
+      this.turnLabel = 'AI 思考中' + suffix
+      this.turnLabelColor = this.t.onSurfaceVariant
+    } else if (this.mode === 'pvp') {
+      this.turnLabel = colorName + '行棋' + suffix
+      this.turnLabelColor = this.t.onSurface
+    } else if (this.turn === this.humanColor) {
+      this.turnLabel = '你 · ' + colorName + suffix
+      this.turnLabelColor = this.t.primary
+    } else {
+      this.turnLabel = colorName + ' · AI'
+      this.turnLabelColor = this.t.onSurfaceVariant
+    }
+    // 黑子指示点用描边色，避免深色背景上不可见；白子指示点补一圈描边
+    // （浅色模式下 stoneWhite = #FFFFFF 压在近白胶囊底上只有 1.22，纯填充等于看不见）
+    this.turnDot = this.turn === 1 ? this.t.stoneBlackBorder : this.t.stoneWhite
+    this.turnDotRing = this.t.outline
+  },
+
+  // ── 对局流程 ────────────────────────────────────────────────────
+
+  // 落子热区（.tap-layer）被点击：唯一落子入口。
+  // offsetX/offsetY = 距热区（＝舞台）左边沿/上边沿的距离，单位与 clientX/Y 同源，
+  // 故乘上实测换算系数即得舞台内设计像素坐标；再减棋盘偏移即棋盘内坐标（见 handleTap）。
+  // 滚动不影响它（相对元素本身），所以不需要知道滚动量。
+  onBoardClick(e) {
+    if (this.state !== 'playing') return // thinking/over 屏蔽落子
+    var now = Date.now()
+    if (now - this.lastTapTime < TAP_DEBOUNCE) return // 300ms 防抖
+    var ox = e ? e.offsetX : undefined
+    var oy = e ? e.offsetY : undefined
+    if (typeof ox === 'number' && typeof oy === 'number') {
+      this.lastTapTime = now
+      this.handleTap(ox * this.kx(), oy * this.ky())
+      return
+    }
+    // 兜底（offsetX 缺失）：client 坐标 − 棋盘实测 rect 原点。rect 随滚动一起位移，
+    // 故同样不需要知道滚动量。
+    var that = this
+    var cx = e ? e.clientX : 0
+    var cy = e ? e.clientY : 0
+    try {
+      this.$element('board').getBoundingClientRect({
+        success: function (r) {
+          if (!r || r.width <= 0) return
+          var n2 = Date.now()
+          if (n2 - that.lastTapTime < TAP_DEBOUNCE) return
+          that.lastTapTime = n2
+          that.handleTap((cx - (r.left || 0)) * that.kx(), (cy - (r.top || 0)) * that.ky())
+        },
+        fail: function () {}
+      })
+    } catch (err) {}
+  },
+
+  // 换算系数取值：实测优先，未测到时回退 designK（192/屏宽dp）
+  kx() { return this.clientKx > 0 ? this.clientKx : this.designK },
+  ky() { return this.clientKy > 0 ? this.clientKy : this.designK },
+
+  // 棋盘内设计像素坐标 → 几何命中 → 合法走法 的统一入口。
+  // px/py 为「舞台内」坐标（热区铺满舞台），故先减去棋盘偏移换成棋盘内坐标。
+  handleTap(px, py) {
+    if (this.state !== 'playing') return // thinking/over 屏蔽落子
+    var cell = this.geo.hit(px - this.boardX, py - this.boardY)
+    if (!cell) return // 棋盘外静默忽略
+    var mv = this.isPuzzle ? this.matchPuzzleMove(cell) : this.matchMove(cell)
+    if (!mv) {
+      haptic.invalid()
+      return
+    }
+    // 残局：题解着法才继续；其他合法着法判错误（不落子，可重试/悔棋）
+    if (this.isPuzzle) {
+      this.tryPuzzleMove(mv)
+      return
+    }
+    // 兵进底线：人类先弹「升变为？」四选一，选定后才落子；AI 不经过此处（规则层缺省升后）
+    if (this.isChessMode && this.isPromotion(mv)) {
+      this.promoMove = mv
+      this.showPromo = true
+      return
+    }
+    this.doMove(mv)
+  },
+
+  // 残局命中：点击目标格若正是题解下一手的目标，优先返回题解指定的那枚子。
+  // 手表上无法「先选子再落子」，若同一目标格多子可达（如后与车），
+  // 按常规排序可能永远选不到题解要求的起点子 —— 这里以题解为准消除歧义。
+  matchPuzzleMove(cell) {
+    var sc = this.puzzle ? this.puzzle.solution[this.puzzleStep] : null
+    if (sc && sc.turn === this.turn && sc.move &&
+        sc.move.i === cell.i && sc.move.j === cell.j) {
+      var ms = this.rules.moves(this.board, this.turn)
+      for (var k = 0; k < ms.length; k++) {
+        var m = ms[k]
+        if (m.i !== cell.i || m.j !== cell.j) continue
+        if (typeof sc.move.fi === 'number' && (m.fi !== sc.move.fi || m.fj !== sc.move.fj)) continue
+        return m
+      }
+    }
+    return this.matchMove(cell)
+  },
+
+  // 残局走子校验：只有题解下一手才执行；否则给「错误」提示，不改变局面。
+  tryPuzzleMove(mv) {
+    var sc = this.puzzle ? this.puzzle.solution[this.puzzleStep] : null
+    if (!sc || !this.solutionMoveMatches(mv, sc.move)) {
+      haptic.invalid()
+      this.showPassNote('着法错误 · 可重试')
+      return
+    }
+    this.puzzleHints = []
+    this.doMove(mv)
+  },
+
+  // 输入：规则层走法 / 题解走法；输出：是否同一手（题解带 fi/fj 时要求起点也一致）。
+  solutionMoveMatches(mv, sm) {
+    if (!mv || !sm) return false
+    if (mv.i !== sm.i || mv.j !== sm.j) return false
+    if (typeof sm.fi === 'number' && (mv.fi !== sm.fi || mv.fj !== sm.fj)) return false
+    return true
+  },
+
+  // 题解走法 → 规则层走法（保留起点；防守方按题解应手时用）。
+  solutionMoveOf(sm) {
+    var mv = { i: sm.i, j: sm.j }
+    if (typeof sm.fi === 'number') {
+      mv.fi = sm.fi
+      mv.fj = sm.fj
+    }
+    return mv
+  },
+
+  // 输入：走法；输出：是否兵进底线（国际象棋升变）。
+  isPromotion(mv) {
+    if (!mv || mv.fi === undefined) return false
+    var v = this.board[mv.fj][mv.fi]
+    return (v === 1 || v === 7) && (mv.j === 0 || mv.j === 7)
+  },
+
+  // 选定升变棋子：把 promo 写进待落走法，再走正常落子流程。
+  pickPromo(pi) {
+    var mv = this.promoMove
+    this.showPromo = false
+    this.promoMove = null
+    if (!mv || this.state !== 'playing') return
+    var p = this.promos[pi]
+    if (!p) return
+    mv.promo = p.v
+    this.doMove(mv)
+  },
+
+  // 取消升变：不落子、不消耗回合
+  cancelPromo() {
+    this.showPromo = false
+    this.promoMove = null
+  },
+
+  // 命中→走法匹配：四子棋按列（沉底）；国际象棋按目标格（多子可达时
+  // 优先吃子、其次选离点击最近的棋子）；其余精确匹配格位。
+  matchMove(cell) {
+    var ms = this.rules.moves(this.board, this.turn)
+    if (this.rules.MATCH_BY_COLUMN) {
+      for (var k = 0; k < ms.length; k++) {
+        if (ms[k].i === cell.i) return ms[k]
+      }
+      return null
+    }
+    var hits = []
+    for (var n = 0; n < ms.length; n++) {
+      if (ms[n].i === cell.i && ms[n].j === cell.j) hits.push(ms[n])
+    }
+    if (!hits.length) return null
+    if (hits.length === 1) return hits[0]
+    var that = this
+    hits.sort(function (a, b) {
+      var ca = that.board[a.fj] && a.fj !== undefined && that.board[a.fj][a.fi] ? 1 : 0
+      var cb = that.board[b.fj] && b.fj !== undefined && that.board[b.fj][b.fi] ? 1 : 0
+      if (ca !== cb) return cb - ca // 吃子优先
+      var da = Math.abs(a.fi - cell.i) + Math.abs(a.fj - cell.j)
+      var db = Math.abs(b.fi - cell.i) + Math.abs(b.fj - cell.j)
+      return da - db // 离点击近的棋子优先
+    })
+    return hits[0]
+  },
+
+  // 执行一手走法（人类与 AI 共用），驱动轮转 / 轮空 / 终局。
+  doMove(move) {
+    this.pushHistory()
+    var mover = this.turn
+    var captured = this.rules.captures ? this.rules.captures(this.board, move, mover) : 0
+    this.board = this.rules.apply(this.board, move, mover)
+    this.lastMove = move
+    // 人类大脑模型：把玩家这一手写进 AI 的“记忆”（只记轻量落点，不存整盘）。
+    if (this.mode === 'ai' && mover === this.humanColor && this.rules.__mind) {
+      ai.observePlayer(this.rules.__mind, move)
+    }
+    // 围棋简单劫：提一子且自身一子一气时，记劫点禁立即回提
+    if (this.rules.koAfter) {
+      this.rules.setKo(this.rules.koAfter(this.board, move, mover, captured))
+    }
+    if (captured > 0) {
+      haptic.capture()
+    } else if (!move.pass) {
+      haptic.place()
+    }
+    this.renderStones()
+    if (!move.pass) this.centerOn(move.i, move.j)
+
+    // 残局：不走普通终局/轮转，按题解推进（防守方由 schedulePuzzleDefense 应答）
+    if (this.isPuzzle) {
+      this.afterPuzzleMove(move, mover)
+      return
+    }
+    this.moveCount++
+
+    // 终局判定 1：规则层（将死/困毙/五连/四连/盘满）
+    var ck = this.rules.check(this.board, move)
+    if (ck && ck.result) {
+      this.endGame(ck)
+      return
+    }
+    // 终局判定 2（围棋）：双方连续停一手 → 数子
+    if (move.pass) {
+      this.passStreak++
+    } else {
+      this.passStreak = 0
+    }
+    if (this.passStreak >= 2) {
+      this.endGame(this.rules.score ? this.rules.score(this.board) : { result: 'draw' })
+      return
+    }
+    // 终局判定 3（围棋）：双方均无合法落点 → 直接数子
+    if (this.rules.score &&
+        this.rules.moves(this.board, 1).length === 0 &&
+        this.rules.moves(this.board, 2).length === 0) {
+      this.endGame(this.rules.score(this.board))
+      return
+    }
+
+    // 轮转 + 轮空（黑白棋单方无子可下则对方连走；双方皆无 → 终局）
+    var nextT = 3 - mover
+    if (this.rules.moves(this.board, nextT).length === 0) {
+      if (this.rules.moves(this.board, mover).length === 0) {
+        this.endGame(this.rules.check(this.board, move) || { result: 'draw' })
+        return
+      }
+      this.turn = mover
+      // 轮空提示：回合指示原本会在同一个人身上「停一手」，玩家会以为是卡住了
+      this.showPassNote((nextT === 1 ? '黑方' : '白方') + '无子可走 · 轮空')
+    } else {
+      this.turn = nextT
+      this.passNote = ''
+      // 围棋停一手：棋盘不会多出棋子，不提示会被当成「点了没反应」
+      if (move.pass) this.showPassNote((mover === 1 ? '黑方' : '白方') + '停一手')
+    }
+    // 终局判定 4（国际象棋）：同一局面第 3 次出现 → 和棋。
+    // 规则层只提供 positionKey（纯函数），计数用走子栈（悔棋后自动回落）。
+    if (this.rules.positionKey && this.repeatCount() >= 3) {
+      this.endGame({ result: 'draw', reason: '三次重复局面' })
+      return
+    }
+    this.updateTurnUI()
+    this.saveSnapshot()
+    if (this.mode === 'ai' && this.turn === this.aiColor && this.state === 'playing') {
+      this.scheduleAI()
+    }
+  },
+
+  // ── 残局流程 ────────────────────────────────────────────────────
+
+  // 每手（解题方或防守方）落子后：判目标 → 推进题解 → 排程防守方应手。
+  // 解题方手数只统计题解方的手，用于「步数 N/上限」与最佳记录。
+  afterPuzzleMove(move, mover) {
+    this.puzzleHints = []
+    this.puzzleStep++
+    if (mover === this.humanColor) this.puzzleOwnMoves++
+    if (this.puzzleGoalDone(move)) {
+      this.puzzleWin()
+      return
+    }
+    if (this.puzzleStep >= this.puzzle.solution.length) {
+      this.puzzleFail('未能在步数上限内达成目标')
+      return
+    }
+    var next = this.puzzle.solution[this.puzzleStep]
+    this.turn = next.turn
+    this.updateTurnUI()
+    if (this.turn !== this.humanColor) this.schedulePuzzleDefense()
+  },
+
+  // 输入：最后一手；输出：题目目标是否达成（将死 / 五连 / 提掉 target 白块）。
+  puzzleGoalDone(move) {
+    if (this.puzzle.goal === 'capture') {
+      var target = this.puzzle.target || []
+      for (var k = 0; k < target.length; k++) {
+        if (this.board[target[k][1]][target[k][0]] !== 0) return false
+      }
+      return target.length > 0
+    }
+    if (!this.rules.check) return false
+    var ck = this.rules.check(this.board, move)
+    return !!(ck && ck.result === 'win' && ck.winner === this.puzzle.turn)
+  },
+
+  // 防守方应手：按题解下一手自动落子（这就是题目的最优防守，不做随机搜索/送子）。
+  schedulePuzzleDefense() {
+    var that = this
+    this.state = 'thinking'
+    this.updateTurnUI()
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    var gen = ++this.aiGen
+    this.aiTimer = setTimeout(function () {
+      that.aiTimer = null
+      if (that.aiGen !== gen || that.state !== 'thinking' || !that.isPuzzle) return
+      var ply = that.puzzle.solution[that.puzzleStep]
+      if (!ply) {
+        that.state = 'playing'
+        that.updateTurnUI()
+        return
+      }
+      that.state = 'playing'
+      that.doMove(that.solutionMoveOf(ply.move))
+    }, PUZZLE_THINK)
+  },
+
+  // 残局胶囊文案：目标 + 已用步数/上限；应手阶段说明这是题目的最优应手。
+  updatePuzzleStatus() {
+    var p = this.puzzle
+    if (!p) return
+    this.turnDot = this.turn === 1 ? this.t.stoneBlackBorder : this.t.stoneWhite
+    this.turnDotRing = this.t.outline
+    if (this.state === 'thinking') {
+      this.turnLabel = '最优应手'
+      this.turnLabelColor = this.t.onSurfaceVariant
+      return
+    }
+    var goal = p.goal === 'mate' ? '将死' : (p.goal === 'capture' ? '提子' : '五连')
+    this.turnLabel = goal + ' · 步数 ' + this.puzzleOwnMoves + '/' + p.moveLimit
+    this.turnLabelColor = this.t.primary
+  },
+
+  // 完成：弹窗显示步数/最佳/首次奖励；一次性发币并累计终身成就「残局完成数」。
+  puzzleWin() {
+    this.clearPassNote()
+    this.cancelPromo()
+    this.hints = []
+    this.puzzleHints = []
+    this.state = 'over'
+    this.dimmed = false
+    this.canUndo = this.history.length > 0
+    this.puzzleState = 'done'
+    this.turnLabel = '残局完成'
+    this.turnLabelColor = this.t.resultWin
+    this.turnDot = this.t.outline
+    this.resultReason = '步数 ' + this.puzzleOwnMoves + '/' + this.puzzle.moveLimit
+    this.showModal = true
+    haptic.celebrate()
+    this.savePuzzleResult()
+  },
+
+  // 失败（题解走完仍未达成目标；正常数据下不会发生）：可一键重试。
+  puzzleFail(text) {
+    this.clearPassNote()
+    this.puzzleHints = []
+    this.state = 'over'
+    this.dimmed = false
+    this.canUndo = this.history.length > 0
+    this.puzzleState = 'fail'
+    this.turnLabel = '未达成目标'
+    this.turnLabelColor = this.t.resultLose
+    this.turnDot = this.t.outline
+    this.resultReason = text + ' · 可重试'
+    this.showModal = true
+    haptic.result()
+  },
+
+  // 完成记录与奖励：puzzle_done_<id> / puzzle_best_<id>；
+  // 首次完成发 60 棋币（重复完成不重复发），并累计终身计数 puzzles（只累计一次）。
+  savePuzzleResult() {
+    var that = this
+    var id = this.puzzle.id
+    var own = this.puzzleOwnMoves
+    if (!id) return
+    Promise.all([
+      config.getPref('puzzle_done_' + id, false),
+      config.getPref('puzzle_best_' + id, 0)
+    ]).then(function (vals) {
+      var first = vals[0] !== true
+      var best = Number(vals[1])
+      if (!isFinite(best) || best <= 0) best = own
+      if (own < best) best = own
+      config.saveSetting('puzzle_best_' + id, best)
+      if (!first) {
+        that.resultReason = '步数 ' + own + '/' + that.puzzle.moveLimit + ' · 最佳 ' + best
+        return
+      }
+      config.saveSetting('puzzle_done_' + id, true)
+      that.resultReason = '步数 ' + own + '/' + that.puzzle.moveLimit + ' · 奖励 +' + PUZZLE_REWARD + ' 棋币'
+      that.grantCoins(PUZZLE_REWARD).then(function (coins) {
+        if (coins !== null) toastMod.toast('残局奖励 · +' + PUZZLE_REWARD + ' 棋币', 1600)
+        // 串行：先落币再结算成就，避免两个「读余额-写余额」互相覆盖
+        // （成就解锁提示已由 economy.recordAchEvents 统一播报，这里不再重复弹）
+        return economy.recordAchEvents({ puzzles: 1 })
+      })
+    })
+  },
+
+  // 直接给棋币账户加钱（economy.js 没有「通用加币」接口，这里只做一次相加写回；
+  // 读取-相加-写回与成就结算串行执行，避免覆盖 achievement 奖励写入的余额）。
+  grantCoins(n) {
+    return storage.getItem('coins', 0).then(function (raw) {
+      var coins = typeof raw === 'number' && isFinite(raw) ? Math.floor(raw) : 0
+      if (coins < 0) coins = 0
+      coins += n
+      return storage.setItem('coins', coins).then(function () { return coins })
+    }, function () {
+      return null
+    })
+  },
+
+  // 提示：只高亮题解下一手的目标格，不自动落子。
+  showPuzzleHint() {
+    if (!this.puzzle || this.state !== 'playing' || this.turn !== this.humanColor) {
+      this.puzzleHints = []
+      return
+    }
+    var sc = this.puzzle.solution[this.puzzleStep]
+    if (!sc) return
+    var c = this.geo.pos(sc.move.i, sc.move.j)
+    var s = this.isChessMode
+      ? Math.max(14, this.geo.cell - 4)
+      : Math.max(10, this.geo.stoneD - 4)
+    this.puzzleHints = [{
+      x: Math.round(c.x - s / 2),
+      y: Math.round(c.y - s / 2),
+      s: s
+    }]
+  },
+
+  // 重试：恢复题目初始局面（保留当前缩放档位）。
+  retryPuzzle() {
+    this.showModal = false
+    this.showRestartConfirm = false
+    this.showExitConfirm = false
+    this.showMenu = false
+    this.clearPassNote()
+    this.beginPuzzle()
+  },
+
+  // 输入：已应用的手数；输出：其中解题方的着手数（悔棋后重算步数用）。
+  solverMovesUpTo(n) {
+    var c = 0
+    var sol = this.puzzle ? this.puzzle.solution : []
+    for (var k = 0; k < n && k < sol.length; k++) {
+      if (sol[k].turn === this.puzzle.turn) c++
+    }
+    return c
+  },
+
+  // 围棋停一手（仅对局中的人类回合可用）；连续两手停一手即终局数子。
+  passTurn() {
+    if (this.state !== 'playing') return
+    if (this.mode === 'ai' && this.turn !== this.humanColor) return
+    var now = Date.now()
+    if (now - this.lastTapTime < TAP_DEBOUNCE) return
+    this.lastTapTime = now
+    this.doMove({ pass: true })
+  },
+
+  // 轮空提示：临时把回合胶囊文字换成「某方无子可走 · 轮空」，1.6s 后恢复。
+  // 黑白棋单方无子可走时回合会停在同一个人身上，没有提示会被误认为卡住。
+  showPassNote(text) {
+    var that = this
+    if (this.passTimer) clearTimeout(this.passTimer)
+    this.passNote = text
+    this.passTimer = setTimeout(function () {
+      that.passTimer = null
+      that.passNote = ''
+    }, 1600)
+  },
+
+  clearPassNote() {
+    if (this.passTimer) {
+      clearTimeout(this.passTimer)
+      this.passTimer = null
+    }
+    this.passNote = ''
+  },
+
+  // 输入：无；输出：当前局面在走子栈里出现的次数（含本次）。
+  // 只对提供 positionKey 的棋种有意义（国际象棋三次重复判和）；悔棋后栈变短，计数自然回落。
+  repeatCount() {
+    var key = this.rules.positionKey(this.board, this.turn)
+    var n = 1
+    for (var i = 0; i < this.history.length; i++) {
+      if (this.rules.positionKey(this.history[i].board, this.history[i].turn) === key) n++
+    }
+    return n
+  },
+
+  // AI 异步思考：先渲染「思考中」提示并延迟（随匹配难度 600~1600ms），
+  // 再做有预算上限的搜索，避免 AI 瞬间回应的机械感。
+  // 搜索走 chooseMoveAsync（时间片让出主线程）：搜索期间 UI 仍可响应，
+  // 悔棋/重开把 state 或代次改掉后，旧搜索自行作废、不会迟到一个落子。
+  scheduleAI() {
+    var that = this
+    this.state = 'thinking'
+    this.updateTurnUI()
+    if (this.aiTimer) clearTimeout(this.aiTimer)
+    if (this.aiFallbackTimer) { clearTimeout(this.aiFallbackTimer); this.aiFallbackTimer = null }
+    var gen = ++this.aiGen
+    // 人格影响思考节奏：沉稳慢一点，好战快一点；仍保留 300~500ms 的随机抖动。
+    var pace = this.aiMind ? this.aiMind.pace : 0
+    var delay = (THINK_BASE[this.matchedDifficulty] || 900) + pace + Math.floor(Math.random() * 400)
+    if (delay < 300) delay = 300
+    this.aiTimer = setTimeout(function () {
+      that.aiTimer = null
+      if (that.state !== 'thinking' || that.aiGen !== gen) return // 已被悔棋/重开打断
+      ai.chooseMoveAsync(that.rules, that.board, that.turn, that.matchedDifficulty,
+        function (mv) {
+          if (that.aiFallbackTimer) { clearTimeout(that.aiFallbackTimer); that.aiFallbackTimer = null }
+          if (that.aiGen !== gen || that.state !== 'thinking') return
+          that.state = 'playing'
+          if (mv) {
+            that.doMove(mv)
+          } else {
+            that.updateTurnUI()
+          }
+        },
+        function () { return that.aiGen !== gen || that.state !== 'thinking' },
+        that.aiMind)
+      // 兜底：搜索/人类模型异常时 4s 后仍要落一手，绝不把玩家卡在“AI 思考中”。
+      that.aiFallbackTimer = setTimeout(function () {
+        that.aiFallbackTimer = null
+        if (that.state !== 'thinking' || that.aiGen !== gen) return
+        var ms = that.rules && that.rules.moves ? that.rules.moves(that.board, that.turn) : null
+        if (ms && ms.length) {
+          that.state = 'playing'
+          that.doMove(ms[0])
+        } else {
+          that.state = 'playing'
+          that.updateTurnUI()
+        }
+      }, 4000)
+    }, delay)
+  },
+
+  // 终局：over 态只允许悔棋和重开；对局结果按模式记录。
+  endGame(ck) {
+    this.clearPassNote()   // 终局后胶囊要显示「和棋 / X 方胜」，不能被轮空提示盖住
+    this.cancelPromo()
+    this.hints = []
+    this.state = 'over'
+    this.dimmed = false
+    this.canUndo = this.history.length > 0
+    var res
+    if (ck.result === 'draw') {
+      res = 'draw'
+      this.turnLabel = '和棋'
+      this.turnLabelColor = this.t.resultDraw
+    } else if (this.mode === 'pvp') {
+      // 双人也以本机玩家视角记录胜负（执子色每局随机，仅用于战绩统计）
+      res = ck.winner === this.humanColor ? 'win' : 'lose'
+      this.turnLabel = ck.winner === 1 ? '黑方胜' : '白方胜'
+      this.turnLabelColor = this.t.resultWin
+    } else if (ck.winner === this.humanColor) {
+      res = 'win'
+      this.turnLabel = '你赢了'
+      this.turnLabelColor = this.t.resultWin
+    } else {
+      res = 'lose'
+      this.turnLabel = 'AI 获胜'
+      this.turnLabelColor = this.t.resultLose
+    }
+    this.turnDot = this.t.outline
+    // 胜负原因：规则层给（将死/困毙/数子明细），否则用棋种固定文案
+    var reason = ck.reason || (res === 'draw'
+      ? (DRAW_REASONS[this.game.id] || '')
+      : (WIN_REASONS[this.game.id] || ''))
+    // 结束弹窗文案保持短：原因 · 模式 · 棋币（不重复棋种名，页面本身就是该棋种）
+    this.resultReason = (reason ? reason + ' · ' : '') +
+      (this.mode === 'ai' ? '人机' : '双人') +
+      ' · 棋币 +' + economy.coinFor(res, this.mode)
+    if (res === 'win') {
+      haptic.celebrate()
+    } else {
+      haptic.result()
+    }
+    // 记录后读取连胜：≥2 连胜在结果上追加播报
+    // 挑战/闯关模式不覆盖普通对局存档（普通进度保留，退出挑战后可继续）
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_' + this.game.id)
+      this.hasSave = false
+    }
+    var that = this
+    if (this.isCampaign) {
+      // 按需加载：普通对局不把 60 关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: res === 'win', moves: this.moveCount }).then(function (info) {
+        if (info && info.text) that.resultReason = that.resultReason + ' · ' + info.text
+      })
+    }
+    config.recordResult(this.game.id, res, this.mode).then(function (list) {
+      var st = config.streakOf(list || [])
+      if (res === 'win' && st.cur >= 2) {
+        that.resultText = that.resultText + ' · ' + st.cur + ' 连胜'
+        that.turnLabel = that.turnLabel + ' · ' + st.cur + ' 连胜'
+      }
+    })
+    this.showModal = true // 结束弹窗
+    // 每日挑战：仅挑战模式且获胜时上报；economy 侧按天去重，重复完成不重复发币
+    if (this.isChallenge && res === 'win') economy.completeDaily(this.game.id)
+  },
+
+  // 弹窗「再来一局」：重新走匹配流程（人机）/直接开局（双人）；残局为重试本题。
+  playAgain() {
+    this.showModal = false
+    if (this.isPuzzle) {
+      this.retryPuzzle()
+      return
+    }
+    if (this.isChallenge) {
+      this.mode = 'ai'
+      this.matchedDifficulty = 'normal'
+      this.sizeIdx = 0
+      this.beginGame()
+      return
+    }
+    this.startMatching()
+  },
+
+  // 收起弹窗进入复盘：over 态保留悔棋/重开能力。
+  hideModal() {
+    this.showModal = false
+  },
+
+  // ── 悔棋栈 ──────────────────────────────────────────────────────
+
+  // 紧凑快照：只存棋盘二维数组 + 行棋方 + 最后一手，深度上限 30。
+  // 残局额外存 puzzleStep（题解指针），悔棋后按快照精确回退，不会指针与局面错位。
+  pushHistory() {
+    var snap = this.board.map(function (row) { return row.slice() })
+    this.history.push({
+      board: snap,
+      turn: this.turn,
+      lastMove: this.lastMove,
+      puzzleStep: this.isPuzzle ? this.puzzleStep : -1
+    })
+    while (this.history.length > UNDO_MAX) this.history.shift()
+    this.canUndo = true
+  },
+
+  popHistory() {
+    var h = this.history.pop()
+    if (!h) return
+    this.board = h.board
+    this.turn = h.turn
+    this.lastMove = h.lastMove
+    if (this.isPuzzle && typeof h.puzzleStep === 'number' && h.puzzleStep >= 0) {
+      this.puzzleStep = h.puzzleStep
+    }
+    this.canUndo = this.history.length > 0
+  },
+
+  // 悔棋：双人退一手；人机退到玩家回合（AI 已回应通常退两步）。
+  undo() {
+    if (!this.history || !this.history.length) return
+    var now = Date.now()
+    if (now - this.lastUndoTime < 300) return // 防连点：连续 tap 会一次退多手
+    this.lastUndoTime = now
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.popHistory()
+    if (this.mode === 'ai' && this.turn !== this.humanColor && this.history.length) {
+      this.popHistory()
+    }
+    // 围棋：悔棋后劫点失真，清空（略宽松，可接受）
+    if (this.rules.setKo) this.rules.setKo(null)
+    this.clearPassNote()
+    this.cancelPromo()
+    this.state = 'playing'
+    this.dimmed = false
+    // 残局：悔棋只能退回题面内的正确着法（history 从题面开始，栈空即到题面）；
+    // 步数与题解指针按剩余手数重算，终局弹窗收起。
+    if (this.isPuzzle) {
+      this.showModal = false
+      this.puzzleState = 'play'
+      this.puzzleHints = []
+      this.puzzleOwnMoves = this.solverMovesUpTo(this.puzzleStep)
+    }
+    this.renderStones()
+    this.updateTurnUI()
+    // 人机：AI 先手且被悔到开局，让 AI 重下（残局不会出现该分支）
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+  },
+
+  // ── 按钮与触摸 ──────────────────────────────────────────────────
+
+  // 重开 = 回到开局设置；对局进行中先确认防误触（终局态直接回）。
+  // 残局的重开语义是「重试本题」（恢复题面），不需要二次确认。
+  restart() {
+    if (this.isPuzzle) {
+      this.retryPuzzle()
+      return
+    }
+    if (this.state === 'playing' || this.state === 'thinking') {
+      this.showRestartConfirm = true
+      return
+    }
+    this.doRestart()
+  },
+
+  cancelRestart() {
+    this.showRestartConfirm = false
+  },
+
+  // 回到开局面板（终局态直接调用；快照保留，可随时「继续上局」）
+  doRestart() {
+    if (this.aiTimer) {
+      clearTimeout(this.aiTimer)
+      this.aiTimer = null
+    }
+    this.clearPassNote()
+    this.cancelPromo()
+    this.hints = []
+    this.state = 'idle'
+    this.dimmed = false
+  },
+
+  confirmRestart() {
+    this.showRestartConfirm = false
+    this.doRestart()
+  },
+
+  openHelp() {
+    router.push({ uri: 'pages/help' })
+  },
+
+  exit() {
+    if (this.state === 'playing' || this.state === 'thinking') {
+      this.showExitConfirm = true
+      return
+    }
+    router.back()
+  },
+
+  cancelExit() {
+    this.showExitConfirm = false
+  },
+
+  // 离开对局：save=true 落快照（主页「继续上局」可恢复）；false 弃档（清快照）。
+  // 残局不写普通对局快照：退出即放弃本次进度，返回残局列表。
+  leaveHome(save) {
+    this.showExitConfirm = false
+    if (this.isPuzzle) {
+      this.aiGen++
+      if (this.aiTimer) {
+        clearTimeout(this.aiTimer)
+        this.aiTimer = null
+      }
+      router.back()
+      return
+    }
+    if (save) {
+      this.saveSnapshot()
+    } else {
+      config.clearPref('save_' + this.game.id)
+      this.hasSave = false
+    }
+    router.back()
+  }
+}
+</script>

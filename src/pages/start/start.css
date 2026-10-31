@@ -1,0 +1,98 @@
+
+.page {
+  width: 192px;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  /* 固定深色：启动页不跟随用户主题（见 start.ux 注释，避免首帧闪一下深浅） */
+  background-color: #1C1B1F;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下），
+   无论运行时按文档顺序还是按 CSS 层叠规则绘制，文字与徽标都在背景之上。 */
+.logo-img,
+.name,
+.sub,
+.hint {
+  position: relative;
+}
+
+/* 品牌徽标：192px 位图按 76px 显示（与改版前的圆形 logo 占位一致） */
+.logo-img {
+  width: 76px;
+  height: 76px;
+}
+
+.name {
+  font-size: 24px;
+  font-weight: bold;
+  line-height: 32px;
+  margin-top: 18px;
+}
+
+.sub {
+  font-size: 13px;
+  line-height: 19px;
+  margin-top: 4px;
+}
+
+.hint {
+  font-size: 11px;
+  line-height: 16px;
+  margin-top: 44px;
+}
+
+/* 方屏/矩形手表：纵向设计空间只有 ~203px，启动页整体收紧，避免提示语被裁掉 */
+@media screen and (shape: rect) {
+  .logo-img {
+    width: 60px;
+    height: 60px;
+  }
+  .name {
+    font-size: 20px;
+    line-height: 26px;
+    margin-top: 12px;
+  }
+  .sub {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .hint {
+    margin-top: 24px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**
+   （元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.logo-img { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.name { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+.sub { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+.hint { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：品牌文字 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .logo-img {
+    width: 84px;
+    height: 84px;
+  }
+  .name {
+    font-size: 28px;
+    line-height: 36px;
+  }
+  .sub {
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .hint {
+    font-size: 14px;
+    line-height: 19px;
+  }
+}

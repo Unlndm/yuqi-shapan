@@ -1,0 +1,81 @@
+<!--
+  pages/about — 关于页。
+  设计参考 bandcomic 关于页：hero 大卡（应用名+版本居左、徽标居右）+ 信息块
+  （标签次级色 + 值粗体），融合本项目 MD3 Token 体系。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">关于</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" scroll-y="true" bounces="true">
+      <!-- hero 大卡：文字居左，徽标居右 -->
+      <div class="hero" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="hero-text">
+          <text class="app-name" style="color:{{t.onSurface}}">{{appName}}</text>
+          <text class="app-ver" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">版本 {{appVer}}</text>
+        </div>
+        <image class="hero-logo" src="/common/img/brand.png"></image>
+      </div>
+
+      <!-- 信息块：标签次级色 + 值粗体 -->
+      <div class="info-block" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="info-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">作者</text>
+        <text class="info-val" style="color:{{t.onSurface}};font-size:{{fz.md}}px">弦起悲歌赴寒江</text>
+        <div class="gap"></div>
+        <text class="info-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">官方群</text>
+        <text class="info-val" style="color:{{t.onSurface}};font-size:{{fz.md}}px">914824845</text>
+      </div>
+
+      <text class="thx" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">感谢每一位玩家，祝对局愉快。</text>
+    </scroll>
+
+  </div>
+</template>
+
+<style>
+@import '../../common/ui.css';
+@import './about.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var app = require('@system.app')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var screen = global.YQ.screen
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    fz: config.fontTokens('normal'),
+    appName: '驭棋沙盘',
+    appVer: '1.0.0'
+  },
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（无快照时保持 data 初值）
+    // 应用名/版本从 manifest 动态读取（ebook 模式），改版本号无需改代码
+    try {
+      var info = app.getInfo()
+      this.appName = info.name
+      this.appVer = info.versionName
+    } catch (e) {}
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：主题没变就一个绑定都不碰（不重设配色绑定 = 不闪）
+    })
+  },
+  goBack() {
+    router.back()
+  }
+}
+</script>

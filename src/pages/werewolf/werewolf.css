@@ -1,0 +1,617 @@
+/*
+ * pages/werewolf 样式 — 狼人杀单机页。
+ * 颜色全部内联绑定（骨架走 theme Token；身份用固定语义色底 + 白字）。
+ * 尺寸/坐标由脚本内联绑定设计像素；CSS 只写形状与骨架（定位、圆角、排版、动效）。
+ * 布局：纵向 flex —— 顶部让位 / 顶栏 / 正文原生 scroll（flex:1）/ 底栏 / 底部让位。
+ * 9 人玩家列表与日志都在同一个 scroll 内（行高固定 34px），手表上不嵌套第二层滚动。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* 纵向让位块：高度由脚本内联绑定（胶囊屏顶部安全区 / 方屏小边距 / 底栏下留白） */
+.spacer {
+  width: 192px;
+}
+
+/* ── 顶栏：圆形返回键 + 右侧两行状态（天数 / 阶段） ─────────────── */
+.hud {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-fab {
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+  margin-right: 6px;
+}
+
+.hud-stat {
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.hud-day {
+  font-weight: bold;
+  line-height: 16px;
+}
+
+.hud-phase {
+  line-height: 14px;
+}
+
+/* ── 正文：原生 scroll；显式列方向（scroll 子元素默认横向排） ───── */
+.body {
+  width: 168px;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* ── 正文分区：每个状态一个列容器（scroll 的直接子项，宽度固定 176）── */
+.pane {
+  width: 168px;
+  flex-direction: column;
+}
+
+/* ── 开局设置 ──────────────────────────────────────────────────── */
+.s-title {
+  width: 168px;
+  text-align: center;
+  font-weight: bold;
+  line-height: 26px;
+  margin-top: 2px;
+}
+
+.s-sub {
+  width: 168px;
+  text-align: center;
+  line-height: 16px;
+  margin-top: 2px;
+}
+
+.chips {
+  width: 168px;
+  flex-direction: column;
+}
+
+.chip {
+  width: 168px;
+  height: 34px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 17px;
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.chip-t {
+  font-weight: bold;
+  text-align: center;
+}
+
+.s-note {
+  width: 168px;
+  line-height: 16px;
+  margin-top: 3px;
+}
+
+.s-rule {
+  width: 168px;
+  line-height: 16px;
+  margin-top: 8px;
+  margin-bottom: 2px;
+}
+
+/* ── 阶段卡 / 角色卡 ───────────────────────────────────────────── */
+.sec-label {
+  width: 168px;
+  font-weight: bold;
+  line-height: 15px;
+  margin-top: 7px;
+  margin-bottom: 4px;
+}
+
+.phase-card {
+  width: 168px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-left: 7px;
+  padding-right: 7px;
+  margin-bottom: 8px;
+}
+
+.phase-head {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.phase-day {
+  font-weight: bold;
+  line-height: 17px;
+}
+
+.phase-step {
+  font-weight: bold;
+  line-height: 15px;
+}
+
+.phase-hint {
+  line-height: 16px;
+  margin-top: 2px;
+}
+
+.phase-news {
+  line-height: 15px;
+  margin-top: 2px;
+}
+
+/* 角色卡：底色由内联绑定为身份固定语义色，文字统一白字（对比度 ≥7:1） */
+.role-card {
+  width: 168px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-left: 7px;
+  padding-right: 7px;
+  margin-bottom: 2px;
+}
+
+.role-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.role-name {
+  font-weight: bold;
+  color: #FFFFFF;
+  line-height: 18px;
+}
+
+.role-faction {
+  color: #FFFFFF;
+  line-height: 15px;
+}
+
+.role-you {
+  color: #FFFFFF;
+  opacity: 0.85;
+  line-height: 15px;
+}
+
+.role-skill {
+  color: #FFFFFF;
+  line-height: 15px;
+  margin-top: 2px;
+}
+
+.role-extra {
+  color: #FFFFFF;
+  line-height: 15px;
+  margin-top: 1px;
+}
+
+/* ── 行动目标行（行高 34px ≥ 触摸下限）────────────────────────── */
+.trow {
+  width: 168px;
+  height: 34px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 10px;
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 8px;
+  padding-right: 8px;
+  margin-bottom: 5px;
+}
+
+.trow-name {
+  flex: 1;
+  font-weight: bold;
+  line-height: 17px;
+}
+
+.trow-sub {
+  line-height: 15px;
+  margin-right: 6px;
+}
+
+.trow-tag {
+  width: 24px;
+  height: 18px;
+  border-radius: 9px;
+  text-align: center;
+  font-weight: bold;
+  line-height: 18px;
+}
+
+/* ── 发言卡 ────────────────────────────────────────────────────── */
+.sp {
+  width: 168px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 10px;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-left: 7px;
+  padding-right: 7px;
+  margin-bottom: 5px;
+}
+
+.sp-head {
+  flex-direction: row;
+  align-items: center;
+}
+
+.sp-name {
+  font-weight: bold;
+  line-height: 16px;
+  margin-right: 5px;
+}
+
+.sp-claim {
+  height: 16px;
+  border-radius: 8px;
+  padding-left: 5px;
+  padding-right: 5px;
+  line-height: 16px;
+  font-weight: bold;
+}
+
+.sp-text {
+  line-height: 15px;
+  margin-top: 1px;
+}
+
+/* ── 玩家列表：行高固定 34px ───────────────────────────────────── */
+.prow {
+  width: 168px;
+  height: 34px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 10px;
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 7px;
+  padding-right: 7px;
+  margin-bottom: 4px;
+}
+
+.pnum {
+  width: 52px;
+  font-weight: bold;
+  line-height: 17px;
+}
+
+/* 身份标签：已知 = 固定语义色底 + 白字；未知 = surfaceVariant 底 + onSurfaceVariant 字 */
+.prole {
+  width: 46px;
+  height: 18px;
+  border-radius: 5px;
+  text-align: center;
+  font-weight: bold;
+  line-height: 18px;
+  margin-right: 4px;
+}
+
+.pstate {
+  flex: 1;
+  line-height: 16px;
+}
+
+.pvote {
+  width: 32px;
+  text-align: right;
+  font-weight: bold;
+  line-height: 16px;
+}
+
+/* ── 战报日志 ──────────────────────────────────────────────────── */
+.logline {
+  width: 168px;
+  line-height: 15px;
+  margin-bottom: 3px;
+}
+
+/* ── 底部主按钮 / 静态提示（同高，版面不跳）────────────────────── */
+.bar-btn,
+.bar-static {
+  width: 168px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+
+.bar-t {
+  font-weight: bold;
+  text-align: center;
+}
+
+/* ── 弹窗（与其余页同口径：胶囊 150 宽 / 按钮 130×40；rect 160 / 140×34）── */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.65);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.modal-title {
+  font-size: 17px;
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.role-badge {
+  width: 100px;
+  height: 36px;
+  border-radius: 18px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.role-badge-t {
+  color: #FFFFFF;
+  font-weight: bold;
+  line-height: 20px;
+}
+
+.modal-sub {
+  line-height: 16px;
+  margin-top: 2px;
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.modal-skill {
+  width: 130px;
+  line-height: 15px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+/* ── 动效层（只挂静态 class；只动 opacity / transform）────────── */
+@keyframes ww-hud-in {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.hud { animation: ww-hud-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ww-card-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+/* ⚠️ .phase-card / .role-card 位于正文 <scroll> 内，禁止挂 transform/opacity 动画：
+   否则运行时会把它当独立合成层，长列表滚动掉帧。动效保留在顶栏 / 底栏 / 弹窗上。 */
+
+
+@keyframes ww-bar-in {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.bar-btn,
+.bar-static { animation: ww-bar-in 260ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ww-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal { animation: ww-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ww-title-pop {
+  0% { opacity: 0; transform: scale(0.88); }
+  60% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal-title { animation: ww-title-pop 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 方屏档：弹窗加宽、按钮压扁（矮画布 228~300，避免弹窗铺满屏）── */
+@media screen and (shape: rect) {
+  /* 双轨口径（与全部老页面一致）：默认（无媒体查询）= 胶囊屏专属设计（卡片 168），
+     方屏 / 其他设备共用这一套 176 设计；不按 228 / 300 / 427 再分档。 */
+  .body,
+  .pane,
+  .s-title,
+  .s-sub,
+  .chips,
+  .chip,
+  .s-note,
+  .s-rule,
+  .sec-label,
+  .phase-card,
+  .role-card,
+  .trow,
+  .sp,
+  .prow,
+  .logline,
+  .bar-btn,
+  .bar-static {
+    width: 176px;
+  }
+  /* 方屏 192×228 上正文只剩约 142px：收紧分区留白，让「阶段卡 + 角色卡 + 目标行」尽量同屏可见；
+     大屏方表（427）同样命中，只是留白略紧，不影响可读性。 */
+  .sec-label {
+    margin-top: 4px;
+    margin-bottom: 3px;
+  }
+  .phase-card {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    padding-left: 6px;
+    padding-right: 6px;
+    margin-bottom: 6px;
+  }
+  .role-card {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .prow {
+    margin-bottom: 3px;
+  }
+  .trow {
+    margin-bottom: 4px;
+  }
+  .sp {
+    margin-bottom: 4px;
+  }
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .modal-skill {
+    width: 140px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp）：两个模式选项并排 + 字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .s-title {
+    line-height: 32px;
+  }
+  .s-sub {
+    line-height: 20px;
+  }
+  .chips {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+  .chip {
+    width: 80px;
+    height: 36px;
+    border-radius: 18px;
+    margin-bottom: 0px;
+    margin-right: 4px;
+  }
+  .s-note,
+  .s-rule {
+    line-height: 20px;
+  }
+  .phase-day {
+    line-height: 22px;
+  }
+  .phase-step,
+  .phase-hint {
+    line-height: 20px;
+  }
+  .phase-news {
+    line-height: 19px;
+  }
+  .role-name {
+    line-height: 22px;
+  }
+  .role-faction,
+  .role-you,
+  .role-skill,
+  .role-extra {
+    line-height: 20px;
+  }
+  .trow-name {
+    line-height: 21px;
+  }
+  .trow-sub {
+    line-height: 19px;
+  }
+  .trow-tag {
+    height: 20px;
+    line-height: 20px;
+    border-radius: 10px;
+  }
+  .sp-name {
+    line-height: 20px;
+  }
+  .sp-claim {
+    height: 20px;
+    line-height: 20px;
+    border-radius: 10px;
+  }
+  .sp-text {
+    line-height: 20px;
+  }
+  .pnum,
+  .pstate,
+  .pvote {
+    line-height: 20px;
+  }
+  .prole {
+    height: 20px;
+    line-height: 20px;
+    border-radius: 6px;
+  }
+  .logline {
+    line-height: 19px;
+  }
+  .modal-title {
+    font-size: 21px;
+    line-height: 28px;
+  }
+}

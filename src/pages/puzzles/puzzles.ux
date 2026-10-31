@@ -1,0 +1,219 @@
+<!--
+  pages/puzzles — 残局列表。
+  职责：按棋种分组展示题库（象棋 / 五子棋 / 围棋各 10 题，共 30 题），
+        每题显示名称、难度、步数上限、完成状态与最佳步数；点击进入对局页残局模式。
+  数据：src/puzzles/index.js（题库纯数据）+ config.getPref 的两个存档键
+        puzzle_done_<id>（是否完成）/ puzzle_best_<id>（最佳解题手数）。
+  入口：赛季页「残局」行；对局页返回后 onShow 重新读取完成状态。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">残局</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" id="body" scroll-y="true" bounces="false">
+      <!-- 总览：已解 / 总题 / 完成度 -->
+      <div class="summary" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.primary}}">{{doneCount}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">已解</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{total}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">总题</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{pctText}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">完成度</text>
+        </div>
+      </div>
+      <text class="hint" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">每题只有一条最优解；走错可重试，卡住可用「提示」。首次完成奖励 {{reward}} 棋币。</text>
+
+      <!-- 棋种分组：标题 + 题目行（整行可点，高 52 ≥ 34 触摸目标） -->
+      <div class="group" for="{{(gi, g) in viewGroups}}">
+        <text class="sec-label" style="color:{{t.onSurfaceVariant}}">{{g.name}} · {{g.doneText}}</text>
+        <div class="p-row" for="{{(pi, p) in g.rows}}"
+             style="background-color:{{p.cardBg}};border-color:{{t.hairline}}"
+             @click="openPuzzle(p.id)">
+          <div class="p-main">
+            <text class="p-name" style="color:{{p.nameColor}}">{{p.name}}</text>
+            <text class="p-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{p.sub}}</text>
+          </div>
+          <text class="p-badge" style="background-color:{{p.badgeBg}};color:{{p.badgeFg}}">{{p.badgeText}}</text>
+        </div>
+      </div>
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 页面内分类 dock：象棋 / 五子棋 / 围棋（只切换本页题库分组） -->
+    <div class="dock dock-3" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="象棋" class="dock-item"
+             style="color:{{tab === 'chess' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'chess' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('chess')" />
+      <input type="button" value="五子棋" class="dock-item"
+             style="color:{{tab === 'gomoku' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'gomoku' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('gomoku')" />
+      <input type="button" value="围棋" class="dock-item"
+             style="color:{{tab === 'go' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'go' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('go')" />
+    </div>
+  </div>
+</template>
+
+<style>
+@import './puzzles.css';
+@import '../../common/ui.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+var puzzles = require('../../puzzles/index.js')
+
+// 首次完成奖励（与对局页 puzzleWin 的发放值一致）
+var PUZZLE_REWARD = 60
+
+// 输入：难度 id；输出：中文档位（题库只允许 easy / normal / hard）。
+function diffLabel(d) {
+  if (d === 'easy') return '简单'
+  if (d === 'hard') return '困难'
+  return '普通'
+}
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    tab: 'chess',
+    viewGroups: [],
+    fz: config.fontTokens('normal'),
+    reward: PUZZLE_REWARD,
+    doneCount: 0,
+    total: 0,
+    pctText: '0%',
+    groups: []
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    var that = this
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.pageH = cl.designH
+      config.applyFontBump(this, cl)
+    }
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+    })
+  },
+
+  // 从对局页返回也走 onShow：重读完成状态与最佳步数
+  onShow() {
+    var that = this
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：主题没变就不重设配色绑定
+      that.reload()
+    })
+  },
+
+  // 读取 30 题 × 2 个存档键，全部回来后再一次性重建分组（避免逐题闪变）。
+  reload() {
+    var that = this
+    var entries = []
+    var jobs = []
+    for (var gi = 0; gi < puzzles.PUZZLE_GAMES.length; gi++) {
+      var g = puzzles.PUZZLE_GAMES[gi]
+      var list = puzzles.getPuzzles(g.id)
+      for (var k = 0; k < list.length; k++) {
+        entries.push({ game: g, p: list[k] })
+        jobs.push(config.getPref('puzzle_best_' + list[k].id, 0))
+        jobs.push(config.getPref('puzzle_done_' + list[k].id, false))
+      }
+    }
+    Promise.all(jobs).then(function (vals) {
+      that.renderRows(entries, vals)
+    })
+  },
+
+  // 输入：题目条目数组 + 存档值（成对：best, done）；输出：无（写入分组与汇总）。
+  renderRows(entries, vals) {
+    var groups = []
+    var cur = null
+    var total = 0
+    var doneTotal = 0
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i]
+      var best = Number(vals[i * 2])
+      if (!isFinite(best) || best < 0) best = 0
+      var done = vals[i * 2 + 1] === true
+      if (!cur || cur.id !== e.game.id) {
+        cur = { id: e.game.id, name: e.game.name, rows: [], done: 0 }
+        groups.push(cur)
+      }
+      total++
+      if (done) {
+        cur.done++
+        doneTotal++
+      }
+      cur.rows.push({
+        id: e.p.id,
+        name: e.p.name,
+        sub: diffLabel(e.p.difficulty) + ' · 限 ' + e.p.moveLimit + ' 步' +
+          (best > 0 ? ' · 最佳 ' + best + ' 步' : ''),
+        cardBg: done ? this.t.surfaceContainerHigh : this.t.cardBg,
+        nameColor: this.t.onSurface,
+        badgeText: done ? '已完成' : '未完成',
+        badgeBg: done ? this.t.primaryContainer : this.t.surfaceVariant,
+        badgeFg: done ? this.t.onPrimaryContainer : this.t.onSurfaceVariant
+      })
+    }
+    for (var gi = 0; gi < groups.length; gi++) {
+      groups[gi].doneText = groups[gi].done + '/' + groups[gi].rows.length
+    }
+    this.groups = groups
+    this.syncTab()
+    this.total = total
+    this.doneCount = doneTotal
+    this.pctText = total > 0 ? Math.round(doneTotal * 100 / total) + '%' : '0%'
+  },
+
+  // 进入对局页残局模式：type 供对局页解析棋种，puzzleId 供题库取题。
+  openPuzzle(id) {
+    var p = puzzles.getPuzzle(id)
+    if (!p) return
+    router.push({ uri: 'pages/game', params: { type: p.game, puzzleId: id } })
+  },
+
+  // 页面内分类切换：象棋 / 五子棋 / 围棋；切换后回到正文顶部
+  pickTab(k) {
+    if (k === this.tab) return
+    this.tab = k
+    this.syncTab()
+    var el = this.$element('body')
+    if (el && el.scrollTo) el.scrollTo({ top: 0 })
+  },
+
+  syncTab() {
+    var out = []
+    for (var i = 0; i < this.groups.length; i++) {
+      if (this.groups[i].id === this.tab) out.push(this.groups[i])
+    }
+    // 题库缺组时兜底到第一组，避免出现空白页
+    if (!out.length && this.groups.length) out.push(this.groups[0])
+    this.viewGroups = out
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

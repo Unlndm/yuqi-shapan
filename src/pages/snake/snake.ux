@@ -1,0 +1,853 @@
+<!--
+  pages/snake — 蛇棋对局页（10×10 蛇形编号，1 在左下、100 在左上）。
+  职责：开局设置（人机 / 双人同机）+ 棋盘底图（board_snake.png，<image> 叶节点）
+        + 棋子在格心叠加（1 蓝 / 2 红）+ 掷骰 / 逐格动画 / 梯蛇结算 / 胜负弹窗 / 存档。
+  规则全部在 rules/snake.js（纯函数、随机可注入）：
+    必须恰好到 100；超出原地不动；掷 6 不连掷；踩梯升 / 踩蛇降。
+  页面只负责：驱动掷骰、演出动画、弹窗、Toast/状态行播报。
+  显示口径：
+    · 整盘默认可见（板面 ≤176，按屏高收敛）；「放大」档用原生 scroll 查看局部。
+    · 棋子位置只改 this.disp（显示层），不改 this.st.pos（引擎状态），避免重复前进。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 开局设置（内容在方屏上高于屏高 → 放进 scroll，底部按钮不被裁） -->
+
+    <!-- 开始页（仅方屏）：左上返回，右侧标题；对局中不渲染，游戏界面仍用抽屉 -->
+    <div class="setup-nav" if="{{rectScreen && state === 'idle'}}">
+      <input type="button" class="setup-nav-back" value="＜"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="exit" />
+      <text class="setup-nav-title" style="color:{{t.onSurface}}">蛇棋</text>
+    </div>
+
+    <scroll class="panel-vp" if="{{state === 'idle'}}" scroll-y="true" bounces="true">
+      <div class="setup">
+        <text class="s-title" style="color:{{t.onSurface}}">蛇棋</text>
+        <text class="s-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">掷骰前进 · 梯升蛇降</text>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">对战模式</text>
+        <div class="chips chips-mode">
+          <div class="chip chip-mode" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{m.n}}</text>
+          </div>
+        </div>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{modeHint}}</text>
+        <input type="button" class="s-start" value="继续上局" if="{{hasSave}}"
+               style="color:{{t.onSurface}};background-color:{{t.surface}};border-color:{{t.primaryContainer}}"
+               @click="continueGame" />
+        <input type="button" class="s-start" value="开始对局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="startMatch" />
+        <div class="s-secondary">
+        <input type="button" class="s-back s-half s-intro" value="玩法介绍"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="s-back s-half s-return" value="返 回"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="exit" />
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 对局 -->
+    <block if="{{state === 'playing'}}">
+      <!-- 状态行：轮次 / 双方格数 / 轮到谁；踩梯踩蛇与超格时临时播报 -->
+      <div class="hud" style="height:{{hudH}}px;padding-top:{{hudTop}}px;background-color:{{t.surfaceContainer}};border-color:{{t.hairline}}">
+        <text class="hud-text" style="color:{{hudColor}};font-size:{{hudFs}}px;line-height:{{hudLh}}px">{{hudText}}</text>
+        <div class="snake-bars" if="{{state === 'playing'}}">
+          <div class="snake-bar"><div class="snake-fill" style="width:{{p1Pct}}%;background-color:{{t.primary}}"></div></div>
+          <div class="snake-bar"><div class="snake-fill" style="width:{{p2Pct}}%;background-color:{{t.error}}"></div></div>
+        </div>
+        <!-- 菜单移出底部操作行、独占顶部右上（玩家 2026-10-24：菜单不要和按钮放一排） -->
+        <input type="button" class="menu-fab" value="菜单"
+               style="left:{{menuX}}px;top:{{menuY}}px;width:{{menuW}}px;height:{{menuH}}px;font-size:{{menuFs}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="openMenu" />
+      </div>
+
+      <!-- 棋盘视口：整盘档内容=视口（拖不动）；放大档内容>视口（原生 scroll 看局部） -->
+      <scroll class="board" id="scene" scroll-x="true" scroll-y="true" bounces="false" style="height:{{viewH}}px">
+        <div class="stage" style="width:{{stageW}}px;height:{{stageH}}px">
+          <div class="ring" style="margin-left:{{ringX}}px;margin-top:{{ringY}}px;width:{{boardPx}}px;height:{{boardPx}}px">
+            <!-- 棋盘底图：<image> 叶节点，宽高显式绑定为板面像素 -->
+            <image class="board-img" style="left:0px;top:0px;width:{{boardPx}}px;height:{{boardPx}}px" src="/common/img/board_snake.png"></image>
+            <!-- 双方棋子（复用棋子徽章位图）：1 蓝、2 红；同格时错开摆放 -->
+            <image class="token" for="{{tokens}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;border-radius:{{$item.r}}px;opacity:{{$item.op}}"
+                   src="{{$item.img}}"></image>
+          </div>
+        </div>
+      </scroll>
+
+      <!-- 底部：页内骰子（可点）+ 34px「掷骰」（菜单已移到顶部状态行） -->
+      <div class="foot" style="height:{{footH}}px">
+        <image class="dice-disc" style="left:{{diceX}}px;top:{{diceY}}px;width:{{dicePx}}px;height:{{dicePx}}px;border-radius:{{diceR}}px" src="{{diceImg}}"></image>
+        <div class="dice-hit" style="left:{{diceX}}px;top:{{diceY}}px;width:{{dicePx}}px;height:{{dicePx}}px" @click="tapRoll"></div>
+        <input type="button" class="roll-btn" value="掷骰" disabled="{{canRoll === false}}"
+               style="left:{{rollX}}px;top:{{rollY}}px;width:{{rollW}}px;height:{{rollH}}px;line-height:{{rollH}}px;font-size:{{rollFs}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="tapRoll" />
+      </div>
+    </block>
+
+    <!-- 通用弹窗（同一时刻只弹一个） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMaskTap">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <!-- 离开对局确认 -->
+        <block if="{{dlg === 'exit'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">离开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">回到主页可稍后「继续上局」</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+          <input type="button" class="m-btn" value="回到主页"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(true)" />
+          <input type="button" class="m-btn" value="狠心离开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(false)" />
+        </block>
+
+        <!-- 终局 -->
+        <block if="{{dlg === 'over'}}">
+          <text class="modal-title" style="color:{{resultColor}}">{{resultText}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{resultReason}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="playAgain" />
+          <input type="button" class="m-btn" value="返回主页"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="exit" />
+        </block>
+      </div>
+    </div>
+
+    <!-- 抽屉：缩放 / 帮助 / 重开 / 退出（侧滑返回或「菜单」键呼出） -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <!-- 条目容器：胶囊屏单列；方屏画布矮 → rect 档改双列网格（每格 86×36 ≥34） -->
+        <div class="d-grid">
+          <input type="button" value="放大棋盘" class="d-item" disabled="{{zoomIdx >= zoomMax}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(1)" />
+          <input type="button" value="缩小棋盘" class="d-item" disabled="{{zoomIdx <= 0}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(-1)" />
+          <input type="button" value="玩法介绍" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuHelp" />
+          <input type="button" value="重开新局" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuRestart" />
+          <input type="button" value="退出对局" class="d-item"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}" @click="menuExit" />
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './snake.css';
+</style>
+
+<script>
+/**
+ * 蛇棋页脚本。
+ * state：idle（开局设置）→ playing（对局，终局时置 over 并弹出胜负框）。
+ * 回合由页面驱动：掷骰 → 逐格动画 → 规则结算（含梯/蛇跳转）→ 交棒 / AI 自动掷骰。
+ * 双人同机：两名玩家轮流点「掷骰」（无隐藏信息，不做交接确认）。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var toastMod = global.YQ.toast
+var snakeRule = require('../../rules/snake.js')
+var rng = global.YQ.rng
+var economy = global.YQ.economy
+
+var LAST = 100
+var SAVE_V = 1
+var STEP_MS = 90
+// 缩放档（多级）：与棋类对局页同口径，0 档 = 整盘，之后逐级放大（超出视口交给原生 scroll）
+var ZOOM_STEPS = [1, 1.4, 1.8, 2.4]
+var BOARD_MAX = 176
+// board_snake.png（512×512）：外框 6px，格阵 500px（10×10，每格 50px）
+var IMG_INSET = 6 / 512
+var IMG_CELL = 500 / 512 / 10
+var NAMES = ['蓝棋', '红棋']
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    rectScreen: false,
+    fz: config.fontTokens('normal'),
+    uiS: 1,
+    fontSizeName: 'normal',
+    isPill: true,
+    state: 'idle',
+    mode: 'ai',
+    modes: [],
+    modeHint: '你是蓝棋，对手是红棋。',
+    hasSave: false,
+    zoomed: false,
+    zoomIdx: 0,
+    zoomSteps: ZOOM_STEPS,
+    zoomMax: ZOOM_STEPS.length - 1,
+    // 布局（脚本内联绑定，CSS 不写死）
+    hudH: 26,
+    hudTop: 0,
+    footH: 46,
+    viewH: 300,
+    boardPx: 176,
+    stageW: 192,
+    stageH: 300,
+    ringX: 8,
+    ringY: 12,
+    tokens: [],
+    diceImg: themeMod.diceImage('0'),
+    diceSkinKey: themeMod.skinKey(),
+    dicePx: 34,
+    diceR: 6,
+    diceX: 6,
+    diceY: 6,
+    rollX: 46,
+    rollY: 6,
+    rollW: 100,
+    rollH: 34,
+    rollFs: 14,
+    menuX: 146,
+    menuY: 6,
+    menuW: 40,
+    menuH: 34,
+    menuFs: 12,
+    hudText: '',
+    p1Pct: 0, p2Pct: 0,
+    hudColor: themeMod.current().onSurface,
+    hudFs: 11,
+    hudLh: 26,
+    canRoll: false,
+    dlg: '',
+    resultText: '',
+    resultReason: '',
+    resultColor: '',
+    showMenu: false
+  },
+
+  onInit() {
+    // 首帧先铺默认模式选项，异步设置回来后再校正
+    this.syncSetupUI()
+    config.seedTheme(this)   // 首帧用已缓存设置定配色，避免闪一下
+    // 闯关/每日挑战：固定人机对战，进页后自动开局
+    this.isChallenge = Number(this.challenge) === 1
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'snake')
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.st = snakeRule.init('ai')
+    this.disp = [0, 0]
+    this.timers = []
+    this.savedSnap = null
+    this.busy = false
+    this.hop = 0
+    this.hopPlayer = -1
+    this.flashSeq = 0
+    this.flashMsg = ''
+    this.flashColor = ''
+    this.diceFace = '0'
+    this.cellPx = 17
+    this.gridInset = 2
+    this.viewH = 300
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('mode', 'ai'),
+      config.getPref('save_snake', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.rectScreen = l.profile === 'rect'
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.syncFonts()
+      that.mode = (that.isCampaign || that.isChallenge) ? 'ai' : (vals[1] === 'pvp' ? 'pvp' : 'ai')
+      that.syncModeHint()
+      that.syncSetupUI()
+      if (that.isCampaign || that.isChallenge) { that.newGame(); return }
+      var snap = vals[2]
+      if (snap && snap.v === SAVE_V && snap.st) {
+        that.savedSnap = snap
+        that.hasSave = true
+      }
+      that.buildBoard()
+      that.syncStatus()
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：没换主题/字号就不重设配色绑定（重绑整页 = 闪）
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      that.buildBoard()
+      that.syncStatus()
+    })
+  },
+
+  syncFonts() {
+    var b = config.fontTokens(this.fontSizeName, this.fontBump || 0)
+    var s = this.uiS
+    this.fz = { md: Math.max(9, Math.round(b.md * s)), sm: Math.max(8, Math.round(b.sm * s)) }
+  },
+
+  syncModeHint() {
+    this.modeHint = this.mode === 'pvp'
+      ? '双人同机轮流：1 号＝蓝棋，2 号＝红棋。'
+      : '你是蓝棋，对手是红棋，双方自动轮流。'
+  },
+
+  // ── 开局设置 ────────────────────────────────────────────────────
+  syncSetupUI() {
+    var modes = []
+    for (var i = 0; i < config.MODES.length; i++) {
+      modes.push({ v: config.MODES[i].v, n: config.MODES[i].n, sel: config.MODES[i].v === this.mode })
+    }
+    this.modes = modes
+  },
+
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m || this.mode === m.v) return
+    this.mode = m.v
+    this.syncModeHint()
+    this.syncSetupUI()
+  },
+
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  startMatch() {
+    this.dlg = ''
+    config.saveSetting('mode', this.mode)
+    this.newGame()
+  },
+
+  newGame() {
+    this.clearTimers()
+    config.clearPref('save_snake')
+    this.savedSnap = null
+    this.hasSave = false
+    this.st = snakeRule.init(this.mode === 'pvp' ? 'duo' : 'ai')
+    this.disp = [0, 0]
+    this.state = 'playing'
+    this.zoomed = false
+    this.zoomIdx = 0
+    this.dlg = ''
+    this.showMenu = false
+    this.busy = false
+    this.hop = 0
+    this.hopPlayer = -1
+    this.flashSeq++
+    this.flashMsg = ''
+    this.flashColor = ''
+    this.showDice(0)
+    this.buildBoard()
+    this.syncStatus()
+    var that = this
+    this.after(60, function () { that.centerOnTurn() })
+    toastMod.toast('对局开始 · 蓝棋先手', 1600)
+    this.drive()
+  },
+
+  continueGame() {
+    var snap = this.savedSnap
+    if (!snap || !snap.st) { this.newGame(); return }
+    this.clearTimers()
+    this.st = snap.st
+    this.mode = snap.mode === 'pvp' ? 'pvp' : 'ai'
+    this.syncModeHint()
+    this.syncSetupUI()
+    this.disp = [this.st.pos[0], this.st.pos[1]]
+    this.state = 'playing'
+    this.zoomed = false
+    this.zoomIdx = 0
+    this.dlg = ''
+    this.showMenu = false
+    this.busy = false
+    this.hop = 0
+    this.hopPlayer = -1
+    this.flashSeq++
+    this.flashMsg = ''
+    this.flashColor = ''
+    this.showDice(this.st.dice || 0)
+    this.buildBoard()
+    this.syncStatus()
+    var that = this
+    this.after(60, function () { that.centerOnTurn() })
+    toastMod.toast('已恢复上局', 1600)
+    this.drive()
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() {
+    screen.keepScreenOn(true)
+    var that = this
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      var key = themeMod.skinKey()
+      if (that.diceSkinKey !== key) {
+        that.diceSkinKey = key
+        that.diceImg = themeMod.diceImage(that.diceFace)   // 当前骰面 → 新皮肤
+      }
+    })
+  },
+  onHide() { screen.keepScreenOn(false) },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimers()
+    this.timers = null
+  },
+
+  onBackPress() {
+    if (this.dlg === 'over') return true   // 胜负框必须选按钮，避免留下空页
+    if (this.dlg !== '') { this.closeDlg(); return true }
+    if (this.showMenu) { this.showMenu = false; return true }
+    if (this.state !== 'playing') return false
+    this.openMenu()
+    return true
+  },
+
+  openMenu() {
+    if (this.dlg !== '') return
+    this.showMenu = true
+  },
+
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 渲染同步 ────────────────────────────────────────────────────
+  buildBoard() {
+    this.layoutBoard()
+    this.syncTokens()
+  },
+
+  // 板面尺寸：默认整盘（≤176，且不超过屏高扣掉状态行/操作行后的可用高）；
+  // 放大档按 ZOOM 倍渲染，交给原生 scroll 平移查看局部。
+  layoutBoard() {
+    // 胶囊屏（跑道屏）上下是半圆：内容宽度在两端会锐减。
+    // 状态行与底部操作行都是 176 宽 → 整行完整可见需让位 57.6，再留 4px 真机边框余量，统一取 62；
+    // 否则最左的骰子 / 最右的菜单会被屏幕圆角切掉（本项目真机取证过同类裁切）。
+    var topSafe = this.isPill ? 62 : 0
+    var bottomSafe = this.isPill ? 62 : 0
+    var hudContent = Math.max(24, Math.round(26 * this.uiS))
+    var hudH = topSafe + hudContent
+    var footH = Math.max(42, Math.round(46 * this.uiS))
+    var viewH = Math.max(60, this.pageH - hudH - footH - bottomSafe)
+    var base = Math.max(80, Math.min(BOARD_MAX, viewH))
+    this.hudTop = topSafe
+    this.hudH = hudH
+    this.footH = footH
+    this.viewH = viewH
+    this.zoomed = this.zoomIdx > 0
+    this.boardPx = Math.round(base * this.zoomSteps[this.zoomIdx])
+    this.gridInset = this.boardPx * IMG_INSET
+    this.cellPx = this.boardPx * IMG_CELL
+    this.stageW = this.zoomed ? Math.max(192, this.boardPx + 8) : 192
+    this.stageH = this.zoomed ? Math.max(viewH, this.boardPx + 8) : viewH
+    this.ringX = Math.round((this.stageW - this.boardPx) / 2)
+    this.ringY = Math.round((this.stageH - this.boardPx) / 2)
+
+    // 底部操作行：骰子（可点）→ 掷骰（34 高）→ 菜单（仅胶囊屏，rect 由 CSS 隐藏）
+    var pad = this.isPill ? 12 : 6
+    var dice = Math.min(34, Math.max(26, footH - 6))
+    this.dicePx = dice
+    this.diceR = Math.round(dice * 0.18)
+    this.diceX = pad
+    this.diceY = Math.round((footH - dice) / 2)
+    // 菜单独占顶部右上（玩家 2026-10-24：不要和底部按钮放一排）；底部只剩骰子 + 掷骰
+    this.menuW = 34
+    this.menuH = 34
+    this.menuFs = 11 + (this.fontBump || 0)
+    this.menuX = this.isPill ? 152 : 192 - pad - 34
+    this.menuY = this.isPill ? Math.round(topSafe - 4) : 0
+    var rollX = pad + dice + 6
+    var rollRight = 192 - pad
+    this.rollX = rollX
+    this.rollW = Math.max(60, rollRight - rollX)
+    this.rollH = 34
+    this.rollY = Math.round((footH - 34) / 2)
+    this.rollFs = Math.max(12, Math.min(18, Math.round(14 * this.uiS) + (this.fontBump || 0)))
+    this.hudFs = Math.max(9, Math.min(14, Math.round(11 * this.uiS) + (this.fontBump || 0)))
+    this.hudLh = Math.max(16, hudH - 4)
+    // 投掷动画基准值（抖动时在基准上偏移，结束后复位）
+    this.diceX0 = this.diceX
+    this.diceY0 = this.diceY
+    this.dicePx0 = dice
+  },
+
+  // 100 格蛇形编号 → 格心坐标：1 在左下，偶数行向右、奇数行向左。
+  cellXY(pos) {
+    var idx = Math.max(0, Math.min(LAST - 1, pos - 1))
+    var row = Math.floor(idx / 10)
+    var col = (row % 2 === 0) ? (idx % 10) : (9 - idx % 10)
+    var cell = this.cellPx
+    return {
+      x: this.gridInset + (col + 0.5) * cell,
+      y: this.gridInset + (9 - row + 0.5) * cell
+    }
+  },
+
+  // 棋子：格心叠加；同格时蓝偏左下、红偏右上；未起步（0）暂显示在 1 号格并降透明度。
+  syncTokens() {
+    var cell = this.cellPx
+    var tok = Math.max(8, Math.round(cell * 0.62))
+    var off = Math.max(1, Math.round(tok * 0.3))
+    var out = []
+    for (var p = 0; p < 2; p++) {
+      var pos = this.disp[p]
+      var g = this.cellXY(pos < 1 ? 1 : pos)
+      var size = tok + (p === this.hopPlayer ? this.hop : 0)
+      out.push({
+        x: Math.round(g.x - size / 2 + (p === 0 ? -off : off)),
+        y: Math.round(g.y - size / 2 + (p === 0 ? off : -off)),
+        d: size,
+        r: Math.round(size / 2),
+        op: pos < 1 ? 0.7 : 1,
+        img: themeMod.pawnImage(p)
+      })
+    }
+    this.tokens = out
+  },
+
+  // 状态行：无临时播报时显示「轮次 · 双方格数 · 轮到谁」。
+  syncStatus() {
+    if (this.state !== 'playing') { this.canRoll = false; return }
+    var s = this.st
+    if (this.flashMsg) {
+      this.hudText = this.flashMsg
+      this.hudColor = this.flashColor || this.t.onSurface
+    } else {
+      var who = this.mode === 'ai' ? (s.turn === 0 ? '你' : 'AI') : (s.turn === 0 ? '蓝' : '红')
+      this.hudText = '第' + s.round + '轮 · 蓝' + s.pos[0] + ' 红' + s.pos[1] + ' · ' + who
+      this.hudColor = s.turn === 0 ? this.t.primary : this.t.error
+      this.p1Pct = Math.max(0, Math.min(100, Math.round(s.pos[0] / LAST * 100)))
+      this.p2Pct = Math.max(0, Math.min(100, Math.round(s.pos[1] / LAST * 100)))
+    }
+    this.canRoll = !this.busy && this.isHumanTurn()
+  },
+
+  // 临时状态行播报（seq 防旧定时器覆盖新消息）。
+  flash(text, color, dur) {
+    var that = this
+    var seq = ++this.flashSeq
+    this.flashMsg = text
+    this.flashColor = color || this.t.onSurface
+    this.syncStatus()
+    this.after(dur || 1600, function () {
+      if (that.flashSeq !== seq) return
+      that.flashMsg = ''
+      that.flashColor = ''
+      that.syncStatus()
+    })
+  },
+
+  isHumanTurn() {
+    if (this.state !== 'playing' || this.busy) return false
+    return this.mode === 'pvp' || this.st.turn === 0
+  },
+
+  showDice(a) {
+    this.diceFace = String(a)
+    this.diceImg = themeMod.diceImage(this.diceFace)
+  },
+
+  // ── 掷骰与动画 ──────────────────────────────────────────────────
+  tapRoll() {
+    if (!this.canRoll || this.dlg !== '' || this.busy) return
+    this.performRoll(this.st.turn)
+  },
+
+  performRoll(player) {
+    var that = this
+    // 挑战模式用种子随机器（同日同局点数一致）；普通模式用 Math.random
+    var diceRand = this.dailyRng ? function () { return that.dailyRng.next() } : undefined
+    var dice = snakeRule.roll(diceRand)   // 规则层随机（1~6）
+    this.busy = true
+    this.canRoll = false
+    haptic.place()
+    var i = 0
+    var tick = function () {
+      if (i >= 7) {
+        that.showDice(dice)
+        haptic.place()
+        that.dicePx = that.dicePx0 + Math.round(that.dicePx0 * 0.14)
+        that.diceX = that.diceX0 - Math.round(that.dicePx0 * 0.07)
+        that.diceY = that.diceY0 - Math.round(that.dicePx0 * 0.07)
+        that.after(110, function () {
+          that.dicePx = that.dicePx0
+          that.diceX = that.diceX0
+          that.diceY = that.diceY0
+          that.resolveRoll(player, dice)
+        })
+        return
+      }
+      that.diceImg = themeMod.diceImage(String(1 + Math.floor(Math.random() * 6)))
+      that.dicePx = that.dicePx0 + Math.floor(Math.random() * 4) - 1
+      that.diceX = that.diceX0 + Math.floor(Math.random() * 5) - 2
+      that.diceY = that.diceY0 + Math.floor(Math.random() * 5) - 2
+      i++
+      that.after(85, tick)
+    }
+    tick()
+  },
+
+  resolveRoll(player, dice) {
+    var that = this
+    var from = this.st.pos[player]
+    var path = []
+    if (from + dice <= LAST) {
+      for (var step = 1; step <= dice; step++) path.push(from + step)
+    }
+    this.animate(player, path, function () { that.applyRoll(player, dice) })
+  },
+
+  // 逐格推进（只改显示位置 this.disp）；隔步给棋子一跳。
+  animate(player, path, cb) {
+    var that = this
+    var i = 0
+    var stepFn = function () {
+      if (i >= path.length) {
+        that.hop = 0
+        that.hopPlayer = -1
+        that.syncTokens()
+        cb()
+        return
+      }
+      that.disp[player] = path[i]
+      that.hopPlayer = player
+      that.hop = (i % 2 === 0) ? 2 : 0
+      that.syncTokens()
+      i++
+      that.after(STEP_MS, stepFn)
+    }
+    stepFn()
+  },
+
+  // 规则结算：把动画后的落点交给引擎（含梯/蛇跳转与超格）；再演跳转、播报。
+  applyRoll(player, dice) {
+    var that = this
+    var res = snakeRule.apply(this.st, player, dice)
+    if (res.invalid) {
+      this.busy = false
+      this.syncStatus()
+      this.drive()
+      return
+    }
+    var from = this.st.pos[player]
+    this.st = res.state
+    this.disp[player] = res.overshoot ? from : Math.min(LAST, from + dice)
+    this.syncTokens()
+
+    if (res.jumps.length) {
+      var jump = res.jumps[res.jumps.length - 1]
+      haptic.capture()
+      toastMod.toastEvents(res.log, 2)
+      this.flash(jump.kind === 'ladder' ? '梯子 ↑' + jump.to : '蛇 ↓' + jump.to,
+        jump.kind === 'ladder' ? this.t.primary : this.t.error, 1800)
+      this.after(300, function () {
+        that.disp[player] = res.to
+        that.syncTokens()
+        that.after(240, function () { that.finishMove() })
+      })
+      return
+    }
+    if (res.overshoot) {
+      haptic.invalid()
+      toastMod.toastEvents(res.log, 2)
+      this.flash('超出 ' + LAST + ' · 原地不动', this.t.error, 1600)
+    } else {
+      this.flash('掷出 ' + dice + ' 点', this.t.onSurfaceVariant, 900)
+    }
+    this.finishMove()
+  },
+
+  finishMove() {
+    this.busy = false
+    var over = snakeRule.check(this.st)
+    if (over) { this.endGame(over); return }
+    this.syncStatus()
+    this.drive()
+  },
+
+  // ── 回合驱动 ────────────────────────────────────────────────────
+  drive() {
+    var that = this
+    if (this.state !== 'playing') return
+    if (this.busy) return
+    if (this.mode === 'ai' && this.st.turn === 1) {
+      this.after(700, function () { that.aiStep() })
+      return
+    }
+    this.syncStatus()
+  },
+
+  aiStep() {
+    if (this.state !== 'playing' || this.busy || this.dlg !== '') return
+    if (this.mode !== 'ai' || this.st.turn !== 1) return
+    this.performRoll(1)
+  },
+
+  // ── 抽屉 / 缩放 ────────────────────────────────────────────────
+  closeMenu() { this.showMenu = false },
+  menuZoom(dir) {
+    this.showMenu = false
+    if (dir > 0) this.zoomIn()
+    else this.zoomOut()
+  },
+  // 多级缩放（仅胶囊屏的菜单可达）：到顶/到底禁用
+  zoomIn() {
+    if (this.zoomIdx >= this.zoomMax) return
+    this.zoomIdx++
+    this.applyZoom()
+  },
+  zoomOut() {
+    if (this.zoomIdx <= 0) return
+    this.zoomIdx--
+    this.applyZoom()
+  },
+  applyZoom() {
+    this.buildBoard()
+    haptic.place()
+    var that = this
+    this.after(60, function () { that.centerOnTurn() })
+  },
+  menuHelp() {
+    this.showMenu = false
+    router.push({ uri: 'pages/help' })
+  },
+  menuRestart() {
+    this.showMenu = false
+    this.newGame()
+  },
+  menuExit() {
+    this.showMenu = false
+    this.dlg = 'exit'
+  },
+
+  centerOnTurn() {
+    if (!this.zoomed) { this.scrollTo(0, 0); return }
+    var p = this.st.turn === 0 ? 0 : 1
+    var pos = this.disp[p] < 1 ? 1 : this.disp[p]
+    var g = this.cellXY(pos)
+    var x = this.ringX + g.x
+    var y = this.ringY + g.y
+    this.scrollTo(Math.max(0, Math.round(x - 96)), Math.max(0, Math.round(y - this.viewH / 2)))
+  },
+
+  scrollTo(left, top) {
+    try {
+      this.$element('scene').scrollTo({ left: left, top: top, behavior: 'smooth' })
+    } catch (e) {}
+  },
+
+  // ── 终局与离开 ──────────────────────────────────────────────────
+  endGame(over) {
+    this.clearTimers()
+    this.state = 'over'
+    this.busy = false
+    this.canRoll = false
+    var res = over.result
+    this.resultText = this.mode === 'pvp'
+      ? (res === 'win' ? '蓝棋获胜' : '红棋获胜')
+      : (res === 'win' ? '你赢了' : '你输了')
+    this.resultReason = NAMES[over.winner] + ' 恰好在 ' + LAST + ' 格 · 共 ' + this.st.round + ' 轮'
+    this.resultColor = res === 'win' ? this.t.resultWin : this.t.resultLose
+    if (res === 'win') haptic.celebrate()
+    else haptic.result()
+    config.clearPref('save_snake')
+    this.savedSnap = null
+    this.hasSave = false
+    config.recordResult('snake', res, this.mode).then(function () {}, function () {})
+    if (this.isChallenge && res === 'win') economy.completeDaily('snake')
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: res === 'win', moves: this.st.round }).then(function (info) {
+        if (info && info.text) that.resultReason = that.resultReason + ' · ' + info.text
+      })
+    }
+    this.dlg = 'over'
+  },
+
+  playAgain() {
+    this.dlg = ''
+    this.newGame()
+  },
+
+  closeDlg() {
+    this.dlg = ''
+    this.drive()
+  },
+
+  noop() {},
+
+  // 点蒙层：仅离开确认可点空白关闭（胜负框必须选按钮）
+  onMaskTap() {
+    if (this.dlg === 'exit') this.closeDlg()
+  },
+
+  exit() {
+    if (this.state !== 'playing') {
+      this.clearTimers()
+      router.back()
+      return
+    }
+    this.dlg = 'exit'
+  },
+
+  leaveHome(save) {
+    this.dlg = ''
+    this.showMenu = false
+    this.clearTimers()
+    if (save) this.saveSnapshot()
+    else config.clearPref('save_snake')
+    router.back()
+  },
+
+  // 存档快照：回到主页后可「继续上局」恢复（带版本号）。
+  saveSnapshot() {
+    if (!this.st) return
+    config.saveSetting('save_snake', {
+      v: SAVE_V,
+      st: this.st,
+      mode: this.mode === 'pvp' ? 'pvp' : 'ai'
+    })
+  }
+}
+</script>

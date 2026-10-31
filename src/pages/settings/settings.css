@@ -1,0 +1,428 @@
+/*
+ * pages/settings 样式 — 设置页；颜色全部内联绑定 Token。
+ * 布局：单行行（标签+开关）与分段控件行（标签+整条 segmented）。
+ * MD3：表面层级用色阶表达，无描边。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下），
+   无论运行时按文档顺序还是按 CSS 层叠规则绘制，内容都在背景之上。 */
+.topbar,
+.body,
+.tabbar {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse; /* DOM 中返回钮在后（置顶可点），视觉反转为左位 */
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮圆心 (38, 24+22) 到圆弧中心 (96,96) 须 ≤ R−r = 74；
+   24 时为 76.6（被切 2.6px），抬到 32 后为 71.6。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+/* 单行行：标签居左 + 开关居右 */
+.srow {
+  width: 168px;
+  height: 56px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 8px;
+}
+
+.slabel {
+  flex: 1;
+  font-weight: bold;
+}
+
+/* 分段控件行的说明（目前只有「对手强度」用：自动 = 按最近 5 局战绩匹配） */
+.seg-note {
+  font-size: 10px;
+  line-height: 15px;
+  margin-top: 1px;
+  margin-bottom: 4px;
+}
+
+/* 开关：52×34 圆角滑槽 + 26 圆形滑钮（2026-10-23：原 46×26 —— 高 26 低于触摸目标下限 34）。
+   滑槽内边距 4 → 滑钮行程 = 52-8-26 = 18；开态 margin-left = 4+18 = 22（见 settings.ux）。 */
+.toggle {
+  width: 52px;
+  height: 34px;
+  border-radius: 17px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.knob {
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  margin-left: 4px;
+}
+
+/* 分段控件行：标签在上，整条 segmented 在下 */
+.sgroup {
+  width: 168px;
+  border-radius: 12px;
+  flex-direction: column;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 8px;
+}
+
+/* 分段控件：高 34（原 32，低于触摸目标下限），圆角取半高 */
+.seg {
+  width: 140px;
+  height: 34px;
+  border-radius: 17px;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.seg-item {
+  flex: 1;
+  height: 34px;
+  line-height: 34px;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* 配色：5 套 chip 网格（3+2）。chip 42×40 ≥ 触摸目标；未解锁的显示价格 */
+.seg-grid {
+  width: 140px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.seg-chip {
+  width: 42px;
+  height: 40px;
+  border-radius: 12px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  margin-bottom: 6px;
+}
+
+.chip-name {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.chip-price {
+  font-size: 10px;
+  line-height: 13px;
+}
+
+/* 皮肤 / 外观入口：说明一行 + 34px 高按钮（与分段控件同宽同高） */
+.skin-hint {
+  width: 140px;
+  line-height: 16px;
+  margin-top: 2px;
+  margin-bottom: 6px;
+}
+
+.skin-entry {
+  width: 140px;
+  height: 34px;
+  border-radius: 17px;
+  border-width: 1px;
+  font-size: 13px;
+  background-color: transparent;
+}
+
+/* ── 配色解锁确认弹窗（与六页弹窗口径一致：150 宽 / 按钮 130×40；rect 160 / 140×34） */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.6);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+  border-width: 1px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 24px;
+}
+
+.modal-sub {
+  margin-top: 2px;
+  margin-bottom: 10px;
+  line-height: 19px;
+  text-align: center;
+}
+
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+.btn-danger {
+  width: 168px;
+  height: 46px;
+  margin-top: 4px;
+  border-radius: 23px;
+  font-size: 14px;
+  background-color: transparent;
+}
+
+/* 底栏（高度经 barH/tabH 自适应绑定）：胶囊屏 = 2 行整宽，192×40 / 枚 + 底部 8；
+   方屏 = 176×44 悬浮坞（2 × 88），宽胶囊 = 2 枚 96×48 一行。 */
+.tabbar {
+  width: 192px;
+  height: 88px;
+  padding-bottom: 8px;
+  flex-direction: column;
+  border-width: 0px;
+  border-top-width: 1px;
+}
+
+.tab {
+  flex: none;
+  width: 192px;
+  height: 40px;
+  line-height: 40px;
+  text-align: center;
+  font-size: 13px;
+  background-color: transparent;
+}
+
+/* 跑道屏（胶囊屏）：两枚整宽上下排，不横着挤；顶沿一条发丝线 */
+@media screen and (shape: pill-shaped) {
+  .tabbar {
+    width: 192px;
+    padding-bottom: 8px;
+    border-radius: 0px;
+    border-width: 0px;
+    border-top-width: 1px;
+  }
+  .tab {
+    width: 192px;
+    font-size: 13px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp）：底部两个 tab 并排一行 + 字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .seg-item {
+    font-size: 16px;
+  }
+  .seg-note {
+    font-size: 12px;
+    line-height: 17px;
+  }
+  /* 配色 chip：一行 3 枚 44 宽（140 内宽放得下），名称字号收到 14 避免 3 字溢出 */
+  .seg-chip {
+    width: 44px;
+    margin-right: 2px;
+  }
+  .chip-name {
+    font-size: 14px;
+    line-height: 18px;
+  }
+  .chip-price {
+    font-size: 12px;
+    line-height: 15px;
+  }
+  .skin-entry {
+    font-size: 16px;
+  }
+  .btn-danger {
+    font-size: 17px;
+  }
+  .tabbar {
+    width: 192px;
+    height: 56px;
+    padding-bottom: 8px;
+    border-radius: 0px;
+    border-width: 0px;
+    border-top-width: 1px;
+    flex-direction: row;
+  }
+  .tab {
+    width: 96px;
+    font-size: 15px;
+  }
+}
+
+/* 方屏/矩形手表：紧凑参数 */
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 6px;
+    width: 176px;
+  }
+  .srow {
+    width: 176px;
+    height: 50px;
+  }
+  .sgroup {
+    width: 176px;
+  }
+  .seg {
+    width: 148px;
+  }
+  .seg-note {
+    font-size: 9px;
+    line-height: 13px;
+  }
+  .seg-grid {
+    width: 148px;
+  }
+  .skin-hint,
+  .skin-entry {
+    width: 148px;
+  }
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+  .btn-danger {
+    width: 176px;
+  }
+  .tabbar {
+    width: 176px;
+    height: 44px;
+    margin-bottom: 4px;
+    padding-bottom: 0px;
+    border-radius: 22px;
+    border-width: 1px;
+    border-top-width: 1px;
+    flex-direction: row;
+  }
+  .tab {
+    width: 88px;
+    height: 44px;
+    line-height: 44px;
+    font-size: 13px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**
+   （元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }

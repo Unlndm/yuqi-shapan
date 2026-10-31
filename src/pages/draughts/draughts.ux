@@ -1,0 +1,1109 @@
+<!--
+  pages/draughts — 国际跳棋（英式 8×8）对局页。
+  职责：开局设置（人机 / 双人）+ 状态机（idle/matching/playing/thinking/over）
+        + 全屏可滚动棋盘（原生 scroll 摄像机）+ 选子/落子/悔棋/重开/退出/存档。
+  规则全部在 rules/draughts.js（纯函数；强制吃子、连吃链、升王、50 回合判和）。
+  页面只负责：渲染棋格/棋子/合法目标、驱动回合、AI 异步搜索、弹窗与播报。
+  交互口径：先点己方棋子选中，再点目标格；只接受规则层给出的合法着法；
+           连吃走法按规则层的 captures 链一次执行（目标格＝链尾落点）。
+  渲染口径：棋格/目标/棋子都是绝对定位叶节点，坐标由脚本算好；
+           棋盘用**流式盒 + 外边距**放在舞台里（与 game / monopoly 一致）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 开局设置面板（idle）：矮画布上内容高于屏高 → 放进 scroll，避免底部按钮被裁 -->
+
+    <!-- 开始页（仅方屏）：左上返回，右侧标题；对局中不渲染，游戏界面仍用抽屉 -->
+    <div class="setup-nav" if="{{rectScreen && state === 'idle'}}">
+      <input type="button" class="setup-nav-back" value="＜"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="exit" />
+      <text class="setup-nav-title" style="color:{{t.onSurface}}">国际跳棋</text>
+    </div>
+
+    <scroll class="panel-vp" if="{{state === 'idle'}}" scroll-y="true" bounces="true">
+      <div class="setup">
+        <text class="s-title" style="color:{{t.onSurface}}">国际跳棋</text>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">对战模式</text>
+        <div class="chips chips-mode">
+          <div class="chip chip-mode" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{m.n}}</text>
+          </div>
+        </div>
+        <text class="s-hint" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">白方先手；有吃子时只能吃子，连吃须走完整条链；兵到底线升王。</text>
+        <input type="button" class="s-start" value="继续上局" if="{{hasSave}}"
+               style="color:{{t.onSurface}};background-color:{{t.surface}};border-color:{{t.primaryContainer}}"
+               @click="continueGame" />
+        <input type="button" class="s-start" value="开始对局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="startMatching" />
+        <div class="s-secondary">
+        <input type="button" class="s-back s-half s-intro" value="玩法介绍"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="s-back s-half s-return" value="返 回"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="exit" />
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 匹配加载页（人机）：匹配成功后展示对手强度，自动进入对局 -->
+    <div class="matching" if="{{state === 'matching'}}">
+      <text class="m-title" style="color:{{t.onSurface}}">国际跳棋</text>
+      <text class="m-mode" style="color:{{t.onSurfaceVariant}}">人机对战</text>
+      <div class="m-dots">
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 0.2 : 1}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+      </div>
+      <text class="m-status" style="color:{{t.onSurfaceVariant}}">{{matchPhase === 'done' ? '匹配成功' : '正在匹配对手…'}}</text>
+      <text class="m-diff" if="{{matchPhase === 'done'}}" style="color:{{t.primary}}">对手强度 · {{matchLabel}}</text>
+      <input type="button" class="s-back" value="取 消"
+             style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+             @click="cancelMatch" />
+    </div>
+
+    <!-- 对局（playing/thinking/over） -->
+    <block if="{{state !== 'idle' && state !== 'matching'}}">
+      <!-- 全屏棋盘视口：原生 scroll 承载棋盘 —— 屏幕＝摄像机；棋盘超出时可在舞台内滚动看局部。
+           bounces=false 把摄像机钳制在舞台边界内，棋盘不会被拖出屏幕。 -->
+      <scroll class="vp" id="vp" scroll-x="true" scroll-y="true" bounces="false">
+        <div class="stage" style="width:{{stageW}}px;height:{{stageH}}px">
+          <div class="board" style="margin-left:{{boardX}}px;margin-top:{{boardY}}px;width:{{boardW}}px;height:{{boardH}}px;background-color:{{boardBg}}">
+            <!-- 8×8 深浅交替格 -->
+            <div class="cell" for="{{cells}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{$item.bg}}"></div>
+            <!-- 空位走子提示：小圆点（仅选中棋子后、人类回合显示） -->
+            <div class="hint" for="{{hints}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{t.primary}};border-color:{{t.onSurface}};opacity:0.85"></div>
+            <!-- 最后一手起止格描边 -->
+            <div class="marker" for="{{markers}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.s}}px;height:{{$item.s}}px;border-color:{{t.lastMark}}"></div>
+            <!-- 棋子：圆盘 + 字形（兵「兵」/ 王「王」，王另有金色描边作冠记） -->
+            <div class="piece" for="{{pieces}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;background-color:{{$item.bg}};border-color:{{$item.border}};opacity:{{dimmed ? 0.7 : 1}}">
+              <text class="piece-glyph" style="font-size:{{$item.fs}}px;color:{{$item.fg}}">{{$item.glyph}}</text>
+            </div>
+            <!-- 吃子目标：方框描边（画在棋子上层，连吃时目标格上的对方棋子仍看得见） -->
+            <div class="target" for="{{targets}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.s}}px;height:{{$item.s}}px;border-color:{{$item.color}}"></div>
+          </div>
+          <!-- 落子热区：铺满舞台、置于最上层（透明，仅用于点击判定） -->
+          <div class="tap-layer" id="board" style="left:0px;top:0px;width:{{stageW}}px;height:{{stageH}}px" @click="onBoardClick"></div>
+        </div>
+      </scroll>
+
+      <!-- 顶部浮层：胶囊屏「菜单」兜底出口 + 回合指示胶囊 -->
+      <div class="status-pill">
+        <input type="button" class="menu-fab" value="菜单"
+               style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="openMenu" />
+        <div class="status-cap" style="background-color:{{t.surfaceContainerHigh}}">
+          <div class="dot" style="background-color:{{turnDot}};border-color:{{turnDotRing}}"></div>
+          <text class="turn-text" style="color:{{turnLabelColor}};font-size:{{fz.md}}px">{{turnLabel}}</text>
+        </div>
+      </div>
+
+      <!-- 离开对局确认（侧滑返回 / 抽屉退出触发） -->
+      <div class="modal-mask" if="{{showExitConfirm}}" style="height:{{pageH}}px" @click="cancelExit">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">离开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">回到主页可稍后「继续上局」</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="cancelExit" />
+          <input type="button" class="m-btn" value="回到主页"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(true)" />
+          <input type="button" class="m-btn" value="狠心离开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(false)" />
+        </div>
+      </div>
+
+      <!-- 重开确认（防误触放弃对局） -->
+      <div class="modal-mask" if="{{showRestartConfirm}}" style="height:{{pageH}}px" @click="cancelRestart">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">重开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">当前对局已自动保存，可随时「继续上局」</text>
+          <input type="button" class="m-btn" value="继续对局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="cancelRestart" />
+          <input type="button" class="m-btn" value="重 开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="confirmRestart" />
+        </div>
+      </div>
+
+      <!-- 结束弹窗：结果 + 出口；点遮罩空白处收起查看棋盘 -->
+      <div class="modal-mask" if="{{showModal}}" style="height:{{pageH}}px" @click="hideModal">
+        <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <div class="modal-dot" style="background-color:{{turnDot}};border-color:{{turnDotRing}}"></div>
+          <text class="modal-title" style="color:{{turnLabelColor}}">{{turnLabel}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{resultReason}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="playAgain" />
+          <input type="button" class="m-btn" value="查看棋盘"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="hideModal" />
+          <input type="button" class="m-btn" value="返回主页"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="exit" />
+        </div>
+      </div>
+
+      <!-- 控制抽屉（侧滑返回 / 顶部「菜单」呼出）：悔棋 / 重开 / 帮助 / 退出 -->
+      <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+        <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+          <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+          <div class="d-grid">
+            <input type="button" value="悔 棋" class="d-item" disabled="{{!canUndo}}"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuUndo" />
+            <input type="button" value="重 开" class="d-item"
+                   style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuRestart" />
+            <input type="button" value="玩法介绍" class="d-item"
+                   style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuHelp" />
+            <input type="button" value="退出对局" class="d-item"
+                   style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}" @click="menuExit" />
+          </div>
+        </div>
+      </div>
+    </block>
+  </div>
+</template>
+
+<style>
+@import './draughts.css';
+</style>
+
+<script>
+/**
+ * 国际跳棋页脚本。
+ * 坐标口径沿用 game.ux：tap-layer 的 offsetX/offsetY 是舞台内坐标，
+ * 乘 getBoundingClientRect 实测换算系数 → 设计像素，再减棋盘偏移即棋盘内坐标。
+ * 棋盘平移＝原生 scroll（屏幕＝摄像机），页面不自绘任何平移。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var economy = global.YQ.economy
+var rng = global.YQ.rng
+var BoardGeometry = global.YQ.BoardGeometry
+var ai = global.YQ.ai
+var draughtsRule = require('../../rules/draughts.js')
+var screen = global.YQ.screen
+
+var GAME_ID = 'draughts'
+var BASE_CELL = 22      // 基准格距（8×22 + 2×4 = 184 ≤ 192）
+var PAD = 4             // 棋盘四周留白（露出深色边框）
+var UNDO_MAX = 30
+var TAP_DEBOUNCE = 250
+var PILL_CLEAR = 26          // 方屏：顶部胶囊底边 24，棋格从 4px 起 → 棋盘顶至少 26
+var PILL_CLEAR_CAPSULE = 68  // 胶囊屏：胶囊顶 32 + 高 34 = 66 → 棋盘顶至少 68
+var THINK_BASE = { easy: 600, normal: 900, hard: 1200 }
+
+// ── 盘面固定语义色（不随主题切换；与 g2048 / minesweeper 的固定盘面同口径）──
+var BOARD_BG = '#3B2A1E'
+var SQ_LIGHT = '#E8D7B5'
+var SQ_DARK = '#7B4B2A'
+var WHITE_BG = '#F4EAD8'
+var WHITE_BD = '#8A6A4A'
+var WHITE_FG = '#3B2A1E'
+var BLACK_BG = '#241D19'
+var BLACK_BD = '#D8CCBB'
+var BLACK_FG = '#F4EAD8'
+var KING_RING = '#F2C230'
+var CAP_RING = '#C0392B'
+
+// 输入：棋子码（0/1兵/2王/3兵/4王）；输出：1 白 / 2 黑 / 0 空。
+function pieceColor(v) {
+  return v === 0 ? 0 : v <= 2 ? 1 : 2
+}
+
+// 输入：棋子码；输出：是否王。
+function pieceKing(v) {
+  return v === 2 || v === 4
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    state: 'idle',           // idle | matching | playing | thinking | over
+    mode: 'ai',
+    modes: [],
+    matchLabel: '',
+    matchPhase: 'loading',
+    breathOn: true,
+    turnLabel: '',
+    turnLabelColor: '',
+    turnDot: '',
+    turnDotRing: '',
+    vpW: 192,
+    vpH: 490,
+    pageH: 490,
+    rectScreen: false,
+    fz: config.fontTokens('normal'),
+    uiS: 1,
+    pillScreen: true,
+    hasSave: false,
+    boardBg: BOARD_BG,
+    boardW: 0,
+    boardH: 0,
+    boardX: 0,
+    boardY: 0,
+    stageW: 192,
+    stageH: 490,
+    cells: [],
+    pieces: [],
+    hints: [],
+    targets: [],
+    markers: [],
+    canUndo: false,
+    dimmed: false,
+    showModal: false,
+    resultReason: '',
+    showExitConfirm: false,
+    showRestartConfirm: false,
+    showMenu: false
+  },
+
+  onInit() {
+    // 首帧先铺默认模式选项，异步设置回来后再校正
+    this.syncSetupUI()
+    config.seedTheme(this)
+    // 每日挑战：强制人机 / 普通难度 / 跳过匹配，并由种子决定执子；
+    // 普通对局不创建 RNG（this.dailyRng 为 null），行为与原先一致。
+    this.isChallenge = Number(this.challenge) === 1
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, GAME_ID)
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.challengePending = this.isChallenge
+    this.challengeLayoutReady = false
+    this.challengeCfgReady = false
+    // 闯关模式：强制人机 + 关卡难度，跳过匹配
+    this.isCampaign = !this.isChallenge && !!this.campaignId
+    this.campaignDiffName = this.campaignDiff === 'easy' || this.campaignDiff === 'hard'
+      ? this.campaignDiff : 'normal'
+    if (this.isCampaign) this.challengePending = true
+    this.moveCount = 0
+    this.settings = config.DEFAULT_SETTINGS
+    this.rules = null
+    this.geo = null
+    this.board = null
+    this.legal = []
+    this.mustCapture = false
+    this.selected = null
+    this.history = []
+    this.lastMove = null
+    this.lastTapTime = 0
+    this.lastUndoTime = 0
+    this.aiTimer = null
+    this.aiGen = 0
+    this.matchTimer = null
+    this.breathTimer = null
+    this.designK = 2
+    this.clientKx = 0
+    this.clientKy = 0
+
+    var that = this
+    Promise.all([
+      config.loadSettings(),
+      config.getPref('mode', 'ai')
+    ]).then(function (vals) {
+      that.settings = vals[0]
+      config.applyTheme(that, vals[0])
+      that.syncFonts()
+      haptic.applySettings(vals[0])
+      that.mode = (that.isChallenge || that.isCampaign) ? 'ai' : (vals[1] === 'pvp' ? 'pvp' : 'ai')
+      if (that.isCampaign) that.matchedDifficulty = that.campaignDiffName
+      else if (that.isChallenge) that.matchedDifficulty = 'normal'
+      that.syncSetupUI()
+      that.challengeCfgReady = true
+      that.beginChallengeIfReady()
+    })
+    this.measureScreen()
+  },
+
+  // 侧滑返回：对局中呼出控制抽屉；开局/匹配态放行。
+  onBackPress() {
+    if (this.showExitConfirm) { this.cancelExit(); return true }
+    if (this.showRestartConfirm) { this.cancelRestart(); return true }
+    if (this.showModal) { this.hideModal(); return true }
+    if (this.showMenu) { this.closeMenu(); return true }
+    if (this.state === 'playing' || this.state === 'thinking' || this.state === 'over') {
+      this.openMenu()
+      return true
+    }
+    return false
+  },
+
+  openMenu() { this.showMenu = true },
+  closeMenu() { this.showMenu = false },
+  noop() {},
+
+  menuUndo() { this.closeMenu(); this.undo() },
+  menuRestart() { this.closeMenu(); this.restart() },
+  menuHelp() { this.closeMenu(); this.openHelp() },
+  menuExit() { this.closeMenu(); this.showModal = false; this.showExitConfirm = true },
+
+  onShow() {
+    screen.keepScreenOn(true)
+    var that = this
+    config.getPref('save_' + GAME_ID, null).then(function (v) {
+      if (v && v.board && v.board.length) that.hasSave = true
+    })
+    config.loadSettings().then(function (s) {
+      var themeChanged = s.theme !== that.settings.theme || s.palette !== that.settings.palette
+      that.settings = s
+      haptic.applySettings(s)
+      config.applyTheme(that, s)
+      that.syncFonts()
+      if (themeChanged && that.state !== 'idle' && that.board) that.renderAll()
+    })
+  },
+
+  onHide() {
+    screen.keepScreenOn(false)
+  },
+
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.aiGen++
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    if (this.matchTimer) { clearTimeout(this.matchTimer); this.matchTimer = null }
+    if (this.breathTimer) { clearInterval(this.breathTimer); this.breathTimer = null }
+    this.history = null
+    this.legal = null
+  },
+
+  // ── 开局设置 ────────────────────────────────────────────────────
+
+  syncSetupUI() {
+    var modes = []
+    for (var i = 0; i < config.MODES.length; i++) {
+      modes.push({ v: config.MODES[i].v, n: config.MODES[i].n, sel: config.MODES[i].v === this.mode })
+    }
+    this.modes = modes
+  },
+
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m || this.mode === m.v) return
+    this.mode = m.v
+    this.syncSetupUI()
+  },
+
+  // ── 匹配（人机）─────────────────────────────────────────────────
+
+  startMatching() {
+    if (this.isChallenge || this.isCampaign) {
+      this.mode = 'ai'
+      this.matchedDifficulty = this.isCampaign ? this.campaignDiffName : 'normal'
+      this.beginGame()
+      return
+    }
+    config.saveSetting('mode', this.mode)
+    if (this.mode !== 'ai') {
+      this.beginGame()
+      return
+    }
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    this.state = 'matching'
+    this.matchPhase = 'loading'
+    this.matchLabel = ''
+    var that = this
+    if (this.breathTimer) clearInterval(this.breathTimer)
+    this.breathTimer = setInterval(function () {
+      that.breathOn = !that.breathOn
+    }, 500)
+    config.matchDifficulty(GAME_ID).then(function (d) {
+      that.matchedDifficulty = d
+    })
+    var delay = 900 + Math.floor(Math.random() * 700)
+    this.matchTimer = setTimeout(function () {
+      that.matchPhase = 'done'
+      that.matchLabel = that.matchedDifficulty === 'easy' ? '简单'
+        : that.matchedDifficulty === 'hard' ? '困难' : '普通'
+      haptic.place()
+      that.matchTimer = setTimeout(function () {
+        that.matchTimer = null
+        if (that.state !== 'matching') return
+        that.stopBreath()
+        that.beginGame()
+      }, 900)
+    }, delay)
+  },
+
+  cancelMatch() {
+    this.stopBreath()
+    if (this.matchTimer) { clearTimeout(this.matchTimer); this.matchTimer = null }
+    this.state = 'idle'
+  },
+
+  stopBreath() {
+    if (this.breathTimer) { clearInterval(this.breathTimer); this.breathTimer = null }
+  },
+
+  // ── 屏幕与几何 ──────────────────────────────────────────────────
+
+  measureScreen() {
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      that.rectScreen = l.profile === 'rect'
+      that.designK = l.scale
+      that.uiS = l.uiScale
+      that.pillScreen = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3（随后 syncFonts 重算）
+      that.syncFonts()
+      that.vpW = 192
+      that.vpH = Math.max(120, l.designH)
+      that.syncStage()
+      that.measureTouch()
+      that.challengeLayoutReady = true
+      that.beginChallengeIfReady()
+    })
+  },
+
+  // 挑战就绪（布局 + 设置都拿到）后直接开局，跳过开局面板与匹配演出。
+  beginChallengeIfReady() {
+    if (!this.challengePending || !this.challengeLayoutReady || !this.challengeCfgReady) return
+    this.challengePending = false
+    this.beginGame()
+  },
+
+  measureTouch() {
+    var that = this
+    try {
+      this.$element('vp').getBoundingClientRect({
+        success: function (r) {
+          if (r && r.width > 0 && r.height > 0) {
+            var kx = that.vpW / r.width
+            var ky = that.vpH / r.height
+            if (kx >= 0.25 && kx <= 4) that.clientKx = kx
+            if (ky >= 0.25 && ky <= 4) that.clientKy = ky
+          }
+        },
+        fail: function () {}
+      })
+    } catch (e) {}
+  },
+
+  scheduleMeasure() {
+    var that = this
+    setTimeout(function () { that.measureTouch() }, 80)
+    var delays = [100, 400, 900]
+    for (var i = 0; i < delays.length; i++) {
+      (function (d) {
+        setTimeout(function () {
+          that.measureTouch()
+          that.layoutBoard()
+        }, d)
+      })(delays[i])
+    }
+  },
+
+  syncFonts() {
+    var b = config.fontTokens(this.settings ? this.settings.fontSize : 'normal', this.fontBump || 0)
+    var s = this.uiS
+    this.fz = { md: Math.max(9, Math.round(b.md * s)), sm: Math.max(8, Math.round(b.sm * s)) }
+  },
+
+  // 8×8 格距：基准 × UI 收敛系数，钳制 21~60（可点性下限）。
+  makeGeo() {
+    var cell = Math.max(21, Math.min(60, Math.round(BASE_CELL * this.uiS)))
+    return new BoardGeometry({ cols: 8, rows: 8, cell: cell, mode: 'cell', pad: PAD })
+  },
+
+  syncStage() {
+    this.stageW = Math.max(this.vpW, this.boardW)
+    var centered = Math.round((this.vpH - this.boardH) / 2)
+    if (centered < 0) centered = 0
+    this.boardX = Math.round((this.stageW - this.boardW) / 2)
+    this.boardY = Math.max(centered, this.pillScreen ? PILL_CLEAR_CAPSULE : PILL_CLEAR)
+    this.stageH = Math.max(this.vpH, this.boardY + this.boardH + centered)
+  },
+
+  padX() { return this.boardX },
+  padY() { return this.boardY },
+
+  // 初始摄像机：横向居中；纵向从舞台顶部开始 —— 棋盘在方屏上可能略高于画布，
+  // 顶部对齐才能保证首行棋格不被顶部回合胶囊压住，超出部分由玩家下滚查看。
+  layoutBoard() {
+    this.scrollBoard((this.boardW - this.vpW) / 2, 0, true)
+  },
+
+  scrollBoard(left, top, instant) {
+    try {
+      this.$element('vp').scrollTo({
+        left: Math.max(0, Math.round(left)),
+        top: Math.max(0, Math.round(top)),
+        behavior: instant ? 'auto' : 'smooth'
+      })
+    } catch (e) {}
+  },
+
+  centerOn(i, j) {
+    var p = this.geo.pos(i, j)
+    this.scrollBoard(this.padX() + p.x - this.vpW / 2, this.padY() + p.y - this.vpH / 2)
+  },
+
+  // ── 开局 / 恢复 / 存档 ──────────────────────────────────────────
+
+  beginGame() {
+    this.rules = draughtsRule.create()
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+    // 挑战/闯关模式不覆盖玩家的模式偏好，也不清普通对局存档
+    if (!this.isChallenge && !this.isCampaign) {
+      config.saveSetting('mode', this.mode)
+      config.clearPref('save_' + GAME_ID)
+      this.hasSave = false
+    }
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    this.board = this.rules.init()
+    this.history = []
+    this.moveCount = 0
+    this.lastMove = null
+    this.selected = null
+    // 白方先手；挑战模式用种子决定玩家执子，同日同局执子相同
+    this.humanColor = this.dailyRng ? this.dailyRng.int(2) + 1 : (Math.random() < 0.5 ? 1 : 2)
+    this.aiColor = 3 - this.humanColor
+    this.turn = 1 // 白方先手
+    this.state = 'playing'
+    this.canUndo = false
+    this.dimmed = false
+    this.buildCells()
+    this.syncLegal()
+    this.renderAll()
+    this.layoutBoard()
+    this.updateTurnUI()
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+    this.scheduleMeasure()
+  },
+
+  continueGame() {
+    var that = this
+    config.getPref('save_' + GAME_ID, null).then(function (snap) {
+      if (!snap || !snap.board) {
+        that.hasSave = false
+        return
+      }
+      that.mode = snap.mode === 'pvp' ? 'pvp' : 'ai'
+      that.matchedDifficulty = snap.difficulty || 'normal'
+      that.syncSetupUI()
+      that.restoreFrom(snap)
+      config.clearPref('save_' + GAME_ID)
+      that.hasSave = false
+    })
+  },
+
+  restoreFrom(snap) {
+    this.rules = draughtsRule.create()
+    this.geo = this.makeGeo()
+    var sz = this.geo.size()
+    this.boardW = sz.w
+    this.boardH = sz.h
+    this.syncStage()
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    this.board = snap.board
+    this.turn = snap.turn === 2 ? 2 : 1
+    this.lastMove = snap.lastMove || null
+    this.humanColor = snap.humanColor === 2 ? 2 : 1
+    this.aiColor = 3 - this.humanColor
+    this.history = []
+    this.selected = null
+    this.state = 'playing'
+    this.canUndo = false
+    this.dimmed = false
+    this.buildCells()
+    this.syncLegal()
+    this.renderAll()
+    this.layoutBoard()
+    this.updateTurnUI()
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+    this.scheduleMeasure()
+  },
+
+  saveSnapshot() {
+    // 挑战局的快照不写入普通存档（不影响普通模式的「继续上局」）
+    if (this.isChallenge) return
+    config.saveSetting('save_' + GAME_ID, {
+      board: this.board,
+      turn: this.turn,
+      lastMove: this.lastMove,
+      humanColor: this.humanColor,
+      mode: this.mode,
+      difficulty: this.matchedDifficulty || 'normal'
+    })
+  },
+
+  // ── 渲染 ────────────────────────────────────────────────────────
+
+  buildCells() {
+    var cell = this.geo.cell
+    var pad = this.geo.pad
+    var arr = []
+    for (var j = 0; j < 8; j++) {
+      for (var i = 0; i < 8; i++) {
+        arr.push({
+          x: pad + i * cell,
+          y: pad + j * cell,
+          w: cell,
+          h: cell,
+          bg: (i + j) % 2 === 1 ? SQ_DARK : SQ_LIGHT
+        })
+      }
+    }
+    this.cells = arr
+  },
+
+  buildPieces() {
+    var out = []
+    if (!this.board) { this.pieces = out; return }
+    var d = this.geo.cell - 4
+    var fs = Math.max(11, Math.round(d * 0.52))
+    var sel = this.selected
+    for (var j = 0; j < 8; j++) {
+      for (var i = 0; i < 8; i++) {
+        var v = this.board[j][i]
+        if (!v) continue
+        var c = this.geo.pos(i, j)
+        var white = pieceColor(v) === 1
+        var king = pieceKing(v)
+        var border = king ? KING_RING : (white ? WHITE_BD : BLACK_BD)
+        if (sel && sel.i === i && sel.j === j) border = this.t.primary
+        out.push({
+          x: Math.round(c.x - d / 2),
+          y: Math.round(c.y - d / 2),
+          d: d,
+          bg: white ? WHITE_BG : BLACK_BG,
+          border: border,
+          fg: white ? WHITE_FG : BLACK_FG,
+          glyph: king ? '王' : '兵',
+          fs: fs
+        })
+      }
+    }
+    this.pieces = out
+  },
+
+  // 选中棋子的合法目标：空位 → 圆点；吃子 → 方框（连吃只显示链尾落点）。
+  buildHints() {
+    var hints = []
+    var targets = []
+    if (this.selected && this.state === 'playing' && this.geo) {
+      if (!(this.mode === 'ai' && this.turn !== this.humanColor)) {
+        var cell = this.geo.cell
+        var seen = {}
+        for (var k = 0; k < this.legal.length; k++) {
+          var m = this.legal[k]
+          if (m.fi !== this.selected.i || m.fj !== this.selected.j) continue
+          var key = m.i + ',' + m.j
+          if (seen[key]) continue
+          seen[key] = 1
+          var c = this.geo.pos(m.i, m.j)
+          if (m.captures && m.captures.length) {
+            var s = cell - 2
+            targets.push({
+              x: Math.round(c.x - s / 2),
+              y: Math.round(c.y - s / 2),
+              s: s,
+              color: CAP_RING
+            })
+          } else {
+            var d = Math.max(7, Math.round(cell * 0.3))
+            hints.push({ x: Math.round(c.x - d / 2), y: Math.round(c.y - d / 2), d: d })
+          }
+        }
+      }
+    }
+    this.hints = hints
+    this.targets = targets
+  },
+
+  buildMarkers() {
+    var out = []
+    if (this.lastMove && this.lastMove.fi !== undefined && this.geo) {
+      var s = this.geo.cell - 4
+      var cells = [[this.lastMove.fi, this.lastMove.fj], [this.lastMove.i, this.lastMove.j]]
+      for (var k = 0; k < cells.length; k++) {
+        var c = this.geo.pos(cells[k][0], cells[k][1])
+        out.push({
+          x: Math.round(c.x - s / 2),
+          y: Math.round(c.y - s / 2),
+          s: s
+        })
+      }
+    }
+    this.markers = out
+  },
+
+  renderAll() {
+    this.buildPieces()
+    this.buildHints()
+    this.buildMarkers()
+  },
+
+  // 缓存当前行棋方的合法着法（规则层已处理强制吃子 / 连吃链）。
+  syncLegal() {
+    this.legal = this.board ? this.rules.moves(this.board, this.turn) : []
+    this.mustCapture = !!(this.legal.length && this.legal[0].captures &&
+      this.legal[0].captures.length)
+  },
+
+  updateTurnUI() {
+    this.dimmed = this.state === 'thinking'
+    this.buildHints()
+    if (this.state !== 'playing' && this.state !== 'thinking') return
+    var side = this.turn === 1 ? '白方' : '黑方'
+    var suffix = this.mustCapture ? ' · 必须吃子' : ''
+    if (this.state === 'thinking') {
+      this.turnLabel = 'AI 思考中'
+      this.turnLabelColor = this.t.onSurfaceVariant
+    } else if (this.mode === 'pvp') {
+      this.turnLabel = side + '行棋' + suffix
+      this.turnLabelColor = this.t.onSurface
+    } else if (this.turn === this.humanColor) {
+      this.turnLabel = '你 · ' + side + suffix
+      this.turnLabelColor = this.t.primary
+    } else {
+      this.turnLabel = side + ' · AI' + suffix
+      this.turnLabelColor = this.t.onSurfaceVariant
+    }
+    this.turnDot = this.turn === 1 ? WHITE_BG : BLACK_BG
+    this.turnDotRing = this.t.outline
+  },
+
+  // ── 交互 ────────────────────────────────────────────────────────
+
+  onBoardClick(e) {
+    if (this.state !== 'playing') return
+    if (this.mode === 'ai' && this.turn !== this.humanColor) return
+    var now = Date.now()
+    if (now - this.lastTapTime < TAP_DEBOUNCE) return
+    var ox = e ? e.offsetX : undefined
+    var oy = e ? e.offsetY : undefined
+    if (typeof ox === 'number' && typeof oy === 'number') {
+      this.lastTapTime = now
+      this.handleTap(ox * this.kx(), oy * this.ky())
+      return
+    }
+    var that = this
+    var cx = e ? e.clientX : 0
+    var cy = e ? e.clientY : 0
+    try {
+      this.$element('board').getBoundingClientRect({
+        success: function (r) {
+          if (!r || r.width <= 0) return
+          var n2 = Date.now()
+          if (n2 - that.lastTapTime < TAP_DEBOUNCE) return
+          that.lastTapTime = n2
+          that.handleTap((cx - (r.left || 0)) * that.kx(), (cy - (r.top || 0)) * that.ky())
+        },
+        fail: function () {}
+      })
+    } catch (err) {}
+  },
+
+  kx() { return this.clientKx > 0 ? this.clientKx : this.designK },
+  ky() { return this.clientKy > 0 ? this.clientKy : this.designK },
+
+  handleTap(px, py) {
+    if (this.state !== 'playing' || !this.geo) return
+    var cell = this.geo.hit(px - this.boardX, py - this.boardY)
+    if (!cell) return
+    this.tapCell(cell)
+  },
+
+  // 一次点击：① 选中棋子可走的目标 → 落子；② 点己方有合法着法的子 → 选中/取消；③ 其余无效。
+  tapCell(cell) {
+    var mv = this.findMove(cell)
+    if (mv) {
+      this.doMove(mv)
+      return
+    }
+    var v = this.board[cell.j] ? this.board[cell.j][cell.i] : 0
+    if (v !== 0 && pieceColor(v) === this.turn && this.hasOrigin(cell)) {
+      if (this.selected && this.selected.i === cell.i && this.selected.j === cell.j) {
+        this.selected = null
+      } else {
+        this.selected = { i: cell.i, j: cell.j }
+      }
+      this.buildPieces()
+      this.buildHints()
+      return
+    }
+    haptic.invalid()
+  },
+
+  // 已选棋子 → 目标格的合法着法（同一目标多条连吃链时取吃子最多的一条）。
+  findMove(cell) {
+    if (!this.selected) return null
+    var hits = []
+    for (var k = 0; k < this.legal.length; k++) {
+      var m = this.legal[k]
+      if (m.fi === this.selected.i && m.fj === this.selected.j &&
+          m.i === cell.i && m.j === cell.j) hits.push(m)
+    }
+    if (!hits.length) return null
+    if (hits.length > 1) {
+      hits.sort(function (a, b) {
+        var ca = a.captures ? a.captures.length : 0
+        var cb = b.captures ? b.captures.length : 0
+        return cb - ca
+      })
+    }
+    return hits[0]
+  },
+
+  hasOrigin(cell) {
+    for (var k = 0; k < this.legal.length; k++) {
+      if (this.legal[k].fi === cell.i && this.legal[k].fj === cell.j) return true
+    }
+    return false
+  },
+
+  // ── 对局流程 ────────────────────────────────────────────────────
+
+  doMove(move) {
+    if (!move || this.state !== 'playing') return
+    this.pushHistory()
+    var mover = this.turn
+    var captured = move.captures ? move.captures.length : 0
+    this.board = this.rules.apply(this.board, move, mover)
+    this.lastMove = move
+    this.selected = null
+    this.moveCount++
+    var ck = this.rules.check(this.board, move)
+    this.turn = 3 - mover
+    this.syncLegal()
+    this.renderAll()
+    if (captured > 0) haptic.capture()
+    else haptic.place()
+    this.centerOn(move.i, move.j)
+    if (ck && ck.result) {
+      this.endGame(ck)
+      return
+    }
+    this.updateTurnUI()
+    this.saveSnapshot()
+    if (this.mode === 'ai' && this.turn === this.aiColor && this.state === 'playing') {
+      this.scheduleAI()
+    }
+  },
+
+  scheduleAI() {
+    var that = this
+    this.state = 'thinking'
+    this.selected = null
+    this.buildPieces()
+    this.updateTurnUI()
+    if (this.aiTimer) clearTimeout(this.aiTimer)
+    if (this.aiFallbackTimer) { clearTimeout(this.aiFallbackTimer); this.aiFallbackTimer = null }
+    var gen = ++this.aiGen
+    var delay = (THINK_BASE[this.matchedDifficulty] || 900) + Math.floor(Math.random() * 400)
+    this.aiTimer = setTimeout(function () {
+      that.aiTimer = null
+      if (that.state !== 'thinking' || that.aiGen !== gen) return
+      ai.chooseMoveAsync(that.rules, that.board, that.turn, that.matchedDifficulty || 'normal',
+        function (mv) {
+          if (that.aiFallbackTimer) { clearTimeout(that.aiFallbackTimer); that.aiFallbackTimer = null }
+          if (that.aiGen !== gen || that.state !== 'thinking') return
+          that.state = 'playing'
+          if (mv) that.doMove(mv)
+          else that.updateTurnUI()
+        },
+        function () { return that.aiGen !== gen || that.state !== 'thinking' })
+      that.aiFallbackTimer = setTimeout(function () {
+        that.aiFallbackTimer = null
+        if (that.state !== 'thinking' || that.aiGen !== gen) return
+        var ms = that.rules && that.rules.moves ? that.rules.moves(that.board, that.turn) : null
+        that.state = 'playing'
+        if (ms && ms.length) that.doMove(ms[0])
+        else that.updateTurnUI()
+      }, 4000)
+    }, delay)
+  },
+
+  endGame(ck) {
+    this.selected = null
+    this.hints = []
+    this.targets = []
+    this.state = 'over'
+    this.dimmed = false
+    this.canUndo = this.history.length > 0
+    var res
+    if (ck.result === 'draw') {
+      res = 'draw'
+      this.turnLabel = '和棋'
+      this.turnLabelColor = this.t.resultDraw
+    } else if (this.mode === 'pvp') {
+      res = ck.winner === this.humanColor ? 'win' : 'lose'
+      this.turnLabel = ck.winner === 1 ? '白方胜' : '黑方胜'
+      this.turnLabelColor = this.t.resultWin
+    } else if (ck.winner === this.humanColor) {
+      res = 'win'
+      this.turnLabel = '你赢了'
+      this.turnLabelColor = this.t.resultWin
+    } else {
+      res = 'lose'
+      this.turnLabel = 'AI 获胜'
+      this.turnLabelColor = this.t.resultLose
+    }
+    this.turnDot = this.t.outline
+    this.resultReason = (ck.reason ? ck.reason + ' · ' : '') +
+      (this.mode === 'ai' ? '人机' : '双人') +
+      ' · 棋币 +' + economy.coinFor(res, this.mode)
+    if (res === 'win') haptic.celebrate()
+    else haptic.result()
+    // 挑战/闯关模式不覆盖普通对局存档（普通进度保留）
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_' + GAME_ID)
+      this.hasSave = false
+    }
+    var that = this
+    if (this.isCampaign) {
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: res === 'win', moves: this.moveCount }).then(function (info) {
+        if (info && info.text) that.resultReason = that.resultReason + ' · ' + info.text
+      })
+    }
+    config.recordResult(GAME_ID, res, this.mode)
+    this.showModal = true
+    // 每日挑战：仅挑战模式且获胜时上报；economy 侧按天去重，重复完成不重复发币
+    if (this.isChallenge && res === 'win') economy.completeDaily(GAME_ID)
+  },
+
+  playAgain() {
+    this.showModal = false
+    if (this.isChallenge) {
+      this.mode = 'ai'
+      this.matchedDifficulty = 'normal'
+      this.beginGame()
+      return
+    }
+    this.startMatching()
+  },
+
+  hideModal() {
+    this.showModal = false
+  },
+
+  // ── 悔棋 ────────────────────────────────────────────────────────
+
+  pushHistory() {
+    var snap = this.board.map(function (row) { return row.slice() })
+    this.history.push({ board: snap, turn: this.turn, lastMove: this.lastMove })
+    while (this.history.length > UNDO_MAX) this.history.shift()
+    this.canUndo = true
+  },
+
+  popHistory() {
+    var h = this.history.pop()
+    if (!h) return
+    this.board = h.board
+    this.turn = h.turn
+    this.lastMove = h.lastMove
+    this.canUndo = this.history.length > 0
+  },
+
+  undo() {
+    if (!this.history || !this.history.length) return
+    var now = Date.now()
+    if (now - this.lastUndoTime < 300) return
+    this.lastUndoTime = now
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    this.aiGen++
+    this.popHistory()
+    if (this.mode === 'ai' && this.turn !== this.humanColor && this.history.length) {
+      this.popHistory()
+    }
+    this.selected = null
+    this.state = 'playing'
+    this.dimmed = false
+    this.showModal = false
+    this.syncLegal()
+    this.renderAll()
+    this.updateTurnUI()
+    if (this.mode === 'ai' && this.turn === this.aiColor) this.scheduleAI()
+  },
+
+  // ── 按钮 ────────────────────────────────────────────────────────
+
+  restart() {
+    if (this.state === 'playing' || this.state === 'thinking') {
+      this.showRestartConfirm = true
+      return
+    }
+    this.doRestart()
+  },
+
+  cancelRestart() {
+    this.showRestartConfirm = false
+  },
+
+  doRestart() {
+    if (this.aiTimer) { clearTimeout(this.aiTimer); this.aiTimer = null }
+    this.aiGen++
+    this.selected = null
+    this.hints = []
+    this.targets = []
+    this.state = 'idle'
+    this.dimmed = false
+    this.showModal = false
+  },
+
+  confirmRestart() {
+    this.showRestartConfirm = false
+    this.doRestart()
+  },
+
+  openHelp() {
+    router.push({ uri: 'pages/help' })
+  },
+
+  exit() {
+    if (this.state === 'playing' || this.state === 'thinking') {
+      this.showExitConfirm = true
+      return
+    }
+    router.back()
+  },
+
+  cancelExit() {
+    this.showExitConfirm = false
+    if (this.state === 'over') this.showModal = true
+  },
+
+  leaveHome(save) {
+    this.showExitConfirm = false
+    if (save && (this.state === 'playing' || this.state === 'thinking')) {
+      this.saveSnapshot()
+    } else {
+      config.clearPref('save_' + GAME_ID)
+      this.hasSave = false
+    }
+    router.back()
+  }
+}
+</script>

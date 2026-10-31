@@ -1,0 +1,249 @@
+/*
+ * pages/puzzles 样式 — 残局列表；颜色全部内联绑定 Token。
+ * 度量口径与 stats / achievements 一致：卡片 168 宽、方屏 176 宽，
+ * 题目行整行可点（52 高，方屏 44 高，均 ≥34 触摸目标），返回钮 44×44。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：背景在前 = 在下，内容恒在背景之上。 */
+.topbar,
+.body {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse; /* DOM 中返回钮在后（置顶可点），视觉反转为左位 */
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮圆心 (38, 24+22) 到圆弧中心 (96,96) 须 ≤ R−r = 74；
+   24 时为 76.6（被切 2.6px），抬到 32 后为 71.6。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+/* 总览：三列数字（与 stats / achievements 的总览卡同口径） */
+.summary {
+  width: 168px;
+  height: 64px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 16px;
+  padding-right: 16px;
+  margin-bottom: 8px;
+}
+
+.s-col {
+  flex-direction: column;
+  align-items: center;
+}
+
+.s-num {
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 26px;
+  letter-spacing: 0.5px;
+}
+
+.s-cap {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.hint {
+  line-height: 17px;
+  margin-left: 4px;
+  margin-right: 4px;
+  margin-bottom: 4px;
+}
+
+/* 棋种分组：标题 + 题目行 */
+.group {
+  width: 168px;
+  flex-direction: column;
+}
+
+.sec-label {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+  margin-left: 4px;
+}
+
+/* 题目行：名称 + 副标题 / 右侧状态徽标；整行可点 */
+.p-row {
+  width: 168px;
+  height: 52px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 12px;
+  padding-right: 10px;
+  margin-bottom: 6px;
+}
+
+.p-main {
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.p-name {
+  font-size: 13px;
+  font-weight: bold;
+  line-height: 18px;
+}
+
+.p-sub {
+  line-height: 16px;
+  margin-top: 1px;
+}
+
+/* 状态徽标：46×20（文字控件，不承担点击） */
+.p-badge {
+  width: 46px;
+  height: 20px;
+  line-height: 20px;
+  border-radius: 10px;
+  font-size: 10px;
+  text-align: center;
+  margin-left: 6px;
+}
+
+/* 方屏/矩形手表：紧凑参数 */
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 6px;
+    width: 176px;
+  }
+  .summary,
+  .group,
+  .p-row {
+    width: 176px;
+  }
+  .p-row {
+    height: 44px;
+  }
+}
+
+/* ── 入场动效（与其他内容页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform、240~300ms、一律挂**静态 class**。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .s-num {
+    font-size: 24px;
+    line-height: 28px;
+  }
+  .s-cap {
+    font-size: 13px;
+    line-height: 17px;
+  }
+  .hint {
+    line-height: 20px;
+  }
+  .sec-label {
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .p-name {
+    font-size: 16px;
+    line-height: 20px;
+  }
+  .p-sub {
+    line-height: 19px;
+  }
+  .p-row {
+    height: 64px;
+  }
+  .p-badge {
+    font-size: 13px;
+  }
+}

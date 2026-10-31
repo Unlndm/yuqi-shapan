@@ -1,0 +1,209 @@
+/*
+ * pages/g2048 样式 — 2048（4×4）。
+ * 颜色全部内联绑定（棋盘面色是固定语义色，不随主题切换；与 monopoly 的盘面色同理）。
+ * 尺寸/坐标由脚本内联绑定设计像素，CSS 只写「形状与骨架」（定位、圆角、排版、动效）。
+ * 布局：整页绝对定位叠放 —— 顶栏（.hud）/ 棋盘（.board）/ 十字键（.pad），互不挤压。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* ── 顶栏：圆形返回键 + 右侧两行状态 ─────────────────────────────
+   规格统一自 utils/metrics.js（nav）：圆形「＜」、边长 = 顶栏高（44 / 矮画布 34）、
+   半径 = 边长一半、底色 surfaceContainerHigh、无描边 —— 与 settings/stats/help/about 的
+   .back-fab 同一套外观（那四页写死在 CSS 里，这里尺寸走内联绑定）。 */
+.hud {
+  position: absolute;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-fab {
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+}
+
+/* 状态块：右对齐两行（第一行主数值、第二行记录/次要信息），字号走 config.fontTokens */
+.hud-stat {
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* ── 棋盘：16 个绝对定位格子，缝里透出棋盘底色 ────────────────────── */
+/* 不设 overflow:hidden —— 否则边缘格子的「尺寸微脉冲」会被裁掉 1px；
+   棋盘四周留 1px 描边（box-sizing:border-box），内区正好容下 4×4 格。 */
+.board {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.tile {
+  position: absolute;
+  border-radius: 6px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-align: center;
+  font-weight: bold;
+}
+
+/* ── 十字方向键 + 新局 ───────────────────────────────────────────── */
+.pad {
+  position: absolute;
+}
+
+/* 底部控件（方向键 / 新局 / 档位）：圆角与 slide、minesweeper 同口径 —— 
+   RADIUS.card = 12（见 utils/metrics.js），三页一致，别再各写各的。 */
+.dbtn {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  text-align: center;
+  font-weight: bold;
+  font-size: 14px;
+  background-color: transparent;
+}
+
+.ngbtn,
+.szbtn {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  text-align: center;
+  font-weight: bold;
+  background-color: transparent;
+}
+
+/* ── 弹窗（样式口径与 monopoly 一致） ────────────────────────────── */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.65);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.modal-title {
+  font-size: 17px;
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.modal-sub {
+  font-size: 12px;
+  line-height: 17px;
+  margin-top: 2px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+/* ── 动效层 ──────────────────────────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / animation /
+   @keyframes（0% 与 100% 必须都写）。只动 opacity / transform（GPU 友好），
+   一律挂在**静态 class** 上（元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-title-pop {
+  0% { opacity: 0; transform: scale(0.88); }
+  60% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal-title { animation: ui-title-pop 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-board-in {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.board { animation: ui-board-in 280ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-pad-in {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.pad { animation: ui-pad-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 顶栏入场（与其余九页统一口径：只动 opacity/transform、240ms、静态 class） */
+@keyframes ui-hud-in {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.hud { animation: ui-hud-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 弹窗分机型档（2026-10-23）：默认 = 胶囊屏 150 宽 / 按钮 130×40；
+   rect = 160 宽 / 按钮 140×34（矮画布方屏三按钮弹窗约 181px，留出上下留白）。
+   数值与 utils/metrics.js 的 MODAL / BTN 对应。 */
+@media screen and (shape: rect) {
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .dbtn {
+    font-size: 17px;
+  }
+  .modal-title {
+    font-size: 20px;
+    line-height: 27px;
+  }
+  .modal-sub {
+    line-height: 19px;
+  }
+  .m-btn {
+    font-size: 17px;
+  }
+}

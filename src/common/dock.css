@@ -1,0 +1,121 @@
+/*
+ * common/dock.css — 全应用底部「悬浮在滚动列表上」的 dock（2026-10-31）。
+ *
+ * 关键：dock 不再作为 flex 子项占据正文高度，而是 position:absolute 覆盖在滚动列表上；
+ * 滚动内容末尾统一留出 160px（方屏 64px）padding，保证最后一项能滚到 dock 上方。
+ *
+ * 口径：
+ *   - 窄胶囊 / 宽胶囊：176×96、2×2、每枚 88×48，圆角 22，距底 60（完全落在胶囊内）；
+ *   - 3 项分类页：2×2 容器，末行居中成品字；
+ *   - 2 项页（设置）：176×48，两枚 88×48；
+ *   - 方屏：176×44、4 枚各 44×44（3 项 132 宽、2 项两枚 88），距底 8。
+ * 颜色由页面内联绑定：底 surfaceContainerHigh / 描边 hairline；
+ * 当前项 primaryContainer + onPrimaryContainer，其余透明 + onSurface。
+ */
+
+.page {
+  position: relative;
+}
+
+.dock {
+  position: absolute;
+  left: 8px;
+  bottom: 60px;
+  width: 176px;
+  height: 80px;
+  border-radius: 20px;
+  border-width: 1px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  justify-content: center;
+}
+
+.dock-item {
+  flex: none;
+  width: 86px;
+  height: 40px;
+  line-height: 40px;
+  text-align: center;
+  font-size: 13px;
+  border-radius: 20px;
+  border-width: 0px;
+  padding: 0px;
+  margin: 0px;
+}
+
+/* 2 项（设置）：一行两枚，面板收半高 */
+.dock-2 {
+  height: 40px;
+}
+
+/* 3 项：2×2 容器，末行居中，形成稳定的品字形 */
+.dock-3 {
+  justify-content: center;
+}
+
+/* 滚动内容末尾的让位块：最后一项能滚到 dock 上方（padding 在部分 Vela scroll 上不生效，用实块） */
+.dock-pad {
+  width: 1px;
+  height: 144px;
+}
+
+@media screen and (shape: rect) {
+  .dock {
+    left: 8px;
+    bottom: 8px;
+    width: 176px;
+    height: 34px;
+    border-radius: 17px;
+    flex-wrap: nowrap;
+  }
+  .dock-item {
+    width: 44px;
+    height: 34px;
+    line-height: 34px;
+    font-size: 11px;
+    border-radius: 17px;
+    border-width: 0px;
+    padding: 0px;
+    margin: 0px;
+  }
+  .dock-2 {
+    width: 176px;
+  }
+  .dock-wide {
+    width: 86px;
+  }
+  .dock-3 {
+    width: 132px;
+  }
+  .dock-pad {
+    height: 44px;
+  }
+}
+
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .dock {
+    left: 8px;
+    bottom: 60px;
+    width: 176px;
+    height: 80px;
+    border-radius: 20px;
+    flex-wrap: wrap;
+  }
+  .dock-item {
+    width: 86px;
+    height: 40px;
+    line-height: 40px;
+    font-size: 15px;
+    border-radius: 20px;
+  }
+  .dock-2 {
+    height: 40px;
+  }
+  .dock-3 {
+    justify-content: center;
+  }
+  .dock-pad {
+    height: 144px;
+  }
+}

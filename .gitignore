@@ -1,0 +1,12 @@
+/.nyc_output
+/coverage
+/node_modules
+/sign
+/dist
+/build
+.husky/
+/yiqi/
+/.trae/
+/.vscode/
+*.pem
+.DS_Store

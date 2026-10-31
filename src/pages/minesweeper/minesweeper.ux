@@ -1,0 +1,608 @@
+<!--
+  pages/minesweeper — 单人扫雷页（6×6/6 雷 默认；7×7/10 雷）。
+  职责：渲染棋盘（for="{{cells}}" 的绝对定位格）+ 顶栏（返回 / 余雷 / 用时）+ 底部模式键与新局，驱动规则层（rules/minesweeper.js）并做演出。
+  规则逻辑全部在 rules/minesweeper.js（纯数据 + 随机数可注入）；页面只管：驱动翻开/插旗、重建视图、弹窗、震动、计时。
+
+  渲染约定（本平台约束）：
+    · 棋盘用 `for="{{cells}}"` —— 每个格对象自带 left/top/w/h 与显示字段（t/fg/bg/bd/fs），
+      模板只读 `$item.*`，**不在模板里做动态索引**；这条路在 monopoly.ux 的 24 格棋盘上真机验证过。
+    · **判定用「棋盘热区 + 几何反推」**：`.tap-layer`（透明 div，铺满棋盘）接 @click，按 game.ux 已验证的
+      offsetX/offsetY + 实测换算系数算出格号；**格本身不绑事件**（不用 `fn($item.i)` 这种把 $item 当事件参数的
+      写法 —— 本工程未验证），**也不用 @longpress**（同上，未验证）。
+    · 交互只有一条路径：底部「点开 / 插旗」模式键切换模式，点格子按当前模式执行；
+      **不自绘 swipe/drag**（自绘触摸会吞掉系统侧滑返回手势）。
+    · 所有控件显式内联 background-color 与 border-color（本工程要求）；形状/圆角/排版写进 minesweeper.css。
+    · 颜色：页面骨架走 theme.js 的 Token；**盘面与数字用固定语义色**（经典扫雷配色，不随主题切换——
+      与 g2048 的暖色盘面、monopoly 的地产色同理；数字色须在同一浅底上可辨，7 黑/4 深蓝等深色只有配浅底才读得出）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏（全应用统一口径）：圆形返回键「＜」+ 右侧两行状态（余雷 / 用时） -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{fz.md}}px">余雷 {{minesLeft}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">用时 {{timeLabel}}</text>
+      </div>
+    </div>
+
+    <!-- 棋盘：for 循环格，每格自带几何与显示字段（**格本身不绑事件** —— 判定交给上面那层热区）；缝里透出棋盘底色 -->
+    <div class="board" style="left:{{bx}}px;top:{{by}}px;width:{{bs}}px;height:{{bs}}px;background-color:{{boardBg}};border-color:{{boardBd}}">
+      <div class="cell" for="{{cells}}"
+           style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{$item.bg}};border-color:{{$item.bd}}">
+        <text class="cell-t" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.t}}</text>
+      </div>
+    </div>
+
+    <!-- 落点热区：铺满棋盘、盖在格之上（透明，只做判定）。坐标系口径沿用 game.ux 已验证的那套：
+         click 事件自带 offsetX/offsetY（官方定义「距触发对象左边沿的距离」，与滚动位置无关），
+         再乘 getBoundingClientRect 实测出的换算系数（设计像素/client 单位，不假设单位制）得到棋盘内坐标。
+         ⚠️ 刻意不用 `@click="fn($item.i)"` 这种「把 $item 当事件参数」的写法，也不用 @longpress ——
+         两者在本工程都没有真机验证过（子代理版本用了前者，本处已改掉）。 -->
+    <div class="tap-layer" id="board" style="left:{{bx}}px;top:{{by}}px;width:{{bs}}px;height:{{bs}}px" @click="onBoardTap"></div>
+
+    <!-- 底部①：模式键（单行大按钮，手环主路径）——点开后按当前模式执行 -->
+    <div class="btn mode-btn"
+         style="left:{{modeL}}px;top:{{modeT}}px;width:{{modeW}}px;height:{{modeH}}px;background-color:{{modeOpen ? t.surfaceContainerHigh : t.primaryContainer}};border-color:{{modeOpen ? t.outline : t.primaryContainer}}"
+         @click="toggleMode">
+      <text class="btn-t" style="color:{{modeOpen ? t.onSurface : t.onPrimaryContainer}};font-size:{{sf}}px">{{modeLabel}}</text>
+    </div>
+
+    <!-- 底部②：档位（点=切到另一档并重开）与新局（同档重开） -->
+    <div class="btn tier-btn"
+         style="left:{{tierL}}px;top:{{tierT}}px;width:{{tierW}}px;height:{{tierH}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+         @click="switchTier">
+      <text class="btn-t" style="color:{{t.onSurface}};font-size:{{sf}}px">{{tierLabel}}</text>
+    </div>
+    <div class="btn new-btn"
+         style="left:{{newL}}px;top:{{newT}}px;width:{{newW}}px;height:{{newH}}px;background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+         @click="newGame">
+      <text class="btn-t" style="color:{{t.onPrimaryContainer}};font-size:{{sf}}px">新局</text>
+    </div>
+
+    <!-- 弹窗（同一时刻只弹一个：dlg 单字段驱动） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">扫清雷区</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{winSub}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="newGame" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+        <block if="{{dlg === 'lose'}}">
+          <text class="modal-title" style="color:{{t.resultLose}}">踩到雷了</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{loseSub}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="newGame" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './minesweeper.css';
+</style>
+
+<script>
+/**
+ * 扫雷页脚本。
+ * 规则状态在 this.st（rules/minesweeper.js 产出的纯数据）；页面只做「驱动 + 演出」。
+ * 最优用时按档位持久化（@system.storage 经 utils/config 的 pref 接口），键 minesweeper_best_<size>。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var msFactory = require('../../rules/minesweeper.js')
+var economy = global.YQ.economy
+var rng = global.YQ.rng
+
+var GRID_GAP = 3           // 格间缝（与三棋盘同口径）
+
+// 档位：默认 6×6/6；第二档 7×7/10。
+// ⚠️ 原需求第二档为 8×8/10，但「8×8 + 3px 缝 + 格宽≥22」在 192 设计宽下数学上不可行：
+//    8×22 + 7×3 = 197 > 176（192 − 2×8）。按「宁少格也不要小格」的既定取舍，第二档降为 7×7/10
+//    （7×22 + 6×3 = 172 ≤ 176，格宽恰为下限 22）。
+var TIERS = [
+  { size: 6, mines: 6, label: '6×6' },
+  { size: 7, mines: 10, label: '7×7' }
+]
+
+// ── 盘面固定语义色（经典扫雷，不随主题切换）─────────────────────────
+// 说明：数字语义色（1 蓝…8 灰）须在开格底色上可辨；开格底色固定为浅灰，深色数字（7 黑 / 4 深蓝 /
+//   5 棕）才读得出。若开格底色跟主题（深色模式下为近黑），黑字会被吃掉，故整块盘面用固定色。
+//   这与 g2048 的固定暖色盘面、monopoly 的固定地产色同属「固定语义色」先例。
+var BOARD_BG = '#8A8A8A'    // 棋盘容器底（缝里透出）
+var BOARD_BD = '#6E6E6E'    // 棋盘描边
+var HIDDEN_BG = '#C7C7C7'   // 未开格
+var HIDDEN_BD = '#AEAEAE'
+var OPEN_BG = '#E9E9E9'     // 已开格
+var OPEN_BD = '#D3D3D3'
+var FLAG_FG = '#C62828'     // 旗（红）
+var MINE_FG = '#37352F'     // 雷
+var BOOM_BG = '#E53935'     // 踩中的雷
+var BOOM_FG = '#FFFFFF'
+var WRONG_FG = '#C62828'    // 错插旗
+// 1 蓝 / 2 绿 / 3 红 / 4 深蓝 / 5 棕 / 6 青 / 7 黑 / 8 灰
+var NUM_COLORS = ['', '#1976D2', '#2E7D32', '#C62828', '#283593', '#795548', '#00838F', '#212121', '#757575']
+
+// 输入：秒数；输出：'M:SS' 文案（负值/脏值兜底 0）。
+function fmt(sec) {
+  var s = (typeof sec === 'number' && isFinite(sec) && sec > 0) ? Math.floor(sec) : 0
+  var m = Math.floor(s / 60)
+  var r = s % 60
+  return m + ':' + (r < 10 ? '0' + r : '' + r)
+}
+
+// 输入：读取到的记录值；输出：合法用时（非正数兜底 0）。
+function normBest(v) {
+  return (typeof v === 'number' && isFinite(v) && v > 0) ? Math.floor(v) : 0
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    isPill: true,
+    dlg: '',
+    modeOpen: true,
+    modeLabel: '点开',
+    tierLabel: '6×6',
+    minesLeft: '6',
+    timeLabel: '0:00',
+    winSub: '',
+    loseSub: '',
+
+    padX: 8, topY: 58, topH: 44, hudW: 176, sf: 12, navSize: 44, navFont: 20, navR: 22,
+    fz: config.fontTokens('normal'),
+    bx: 9, by: 158, bs: 173, boardBg: BOARD_BG, boardBd: BOARD_BD,
+    cells: [],
+    modeL: 9, modeT: 343, modeW: 173, modeH: 40,
+    tierL: 9, tierT: 391, tierW: 83, tierH: 32,
+    newL: 98, newT: 391, newW: 84, newH: 32
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    // 每日挑战：种子驱动首点布雷；普通局不创建 RNG（randFn 返回 undefined → Math.random）
+    this.isChallenge = Number(this.challenge) === 1
+    // 闯关模式：困难关用 7×7，其余 6×6（本玩法只有两档盘面）
+    this.isCampaign = !!this.campaignId
+    this.campaignNote = ''
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'minesweeper')
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.g = msFactory.create()
+    this.tier = (this.isCampaign && this.campaignDiff === 'hard') ? TIERS[1] : TIERS[0]
+    this.st = this.g.newGame(this.tier.size, this.tier.mines).state
+    this.timers = []
+    this.sec = 0
+    this.tickOn = false
+    this.bestMap = {}
+    this.cell = 26
+    this.gap = GRID_GAP
+    this.clientKx = 0        // 实测换算系数（设计像素/client 单位）；量不到时用 designK 兜底
+    this.clientKy = 0
+    this.writeDerived()
+
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('minesweeper_best_' + TIERS[0].size, 0),
+      config.getPref('minesweeper_best_' + TIERS[1].size, 0)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.clientKx = l.scale
+      that.clientKy = l.scale
+      that.bestMap[TIERS[0].size] = normBest(vals[1])
+      that.bestMap[TIERS[1].size] = normBest(vals[2])
+      that.layout()
+      that.buildCells()
+      that.measureTouch()
+      that.writeDerived()
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：没换主题/字号就不重设（整页重绑 = 空白帧）
+      haptic.applySettings(s)
+    })
+  },
+
+  // 输入：无；输出：规则层 rand（挑战 = 种子派生的函数；普通 = undefined → Math.random）。
+  randFn() {
+    var r = this.dailyRng
+    if (!r) return undefined
+    return function () { return r.next() }
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() {
+    screen.keepScreenOn(true)
+    // 从后台回到本页：若棋局仍在进行，恢复计时
+    if (this.st && this.st.started && !this.st.over && !this.st.win) this.startTick()
+  },
+  onHide() {
+    screen.keepScreenOn(false)
+    this.stopTick()           // 清空全部自持定时器（含计时 tick），回到前台再恢复
+  },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.tickOn = false
+    this.clearTimers()
+    this.timers = null
+  },
+
+  // 有弹窗先关弹窗；无弹窗才离屏（返回拦截语义与 g2048 / slide 一致：返回 true 表示本次已消费）
+  onBackPress() {
+    if (this.dlg !== '') { this.dlg = ''; return true }
+    this.stopTick()
+    router.back()
+    return true
+  },
+
+  // 本页所有延时都走自持定时器数组，离屏/销毁时统一清空，避免裸 setTimeout 常驻。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 计时（1 秒一拍的 tick，自持于 timers）──────────────────────────
+  startTick() {
+    if (this.tickOn) return
+    this.tickOn = true
+    this.scheduleTick()
+  },
+  scheduleTick() {
+    var that = this
+    this.after(1000, function () {
+      if (!that.tickOn) return
+      if (!that.st || that.st.over || that.st.win) { that.tickOn = false; return }
+      that.sec++
+      that.timeLabel = fmt(that.sec)
+      that.scheduleTick()
+    })
+  },
+  stopTick() {
+    this.tickOn = false
+    this.clearTimers()
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 由画布高反推：扣掉顶栏、棋盘、底部两行控件与底部余量，余量给正方形棋盘。
+  // 胶囊屏顶部安全区：短边是半圆，半径 R ≈ 屏宽/2 = 96 设计像素，在高度 y 处可见区左边界
+  //   xmin = R − √(R² − (R − y)²)；顶栏最左件是「返回」按钮（左沿 x=8），代入得 y ≥ 57.6 → 取 58
+  //   （⚠️ 真机截图取证：顶部浮层按 y≈2 放置会被屏幕圆角切掉）。方屏才用 2~4。
+  // 底部布局自适应：默认「模式键一行 + 档位/新局一行」（舒展）；若矮画布把格宽压到 < 22，
+  //   退回「单行三键」腾出高度（宁少格也不要小格）。
+  buildLayout(twoRows) {
+    var n = this.tier.size
+    var gap = GRID_GAP
+    var maxSideW = 192 - 2 * this.padX
+    var compact = this.pageH < 400
+    var uiS = this.uiS || 1
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    // 顶栏高度 = 圆形返回键边长（全应用统一口径，见 utils/metrics.js）
+    var navG = metrics.nav(uiS, compact)
+    var topH = navG.size
+    var midGap = compact ? 6 : 10
+    var bottomPad = 6
+    var btnH = compact ? 30 : Math.max(30, Math.round(40 * uiS))
+    var rowGap = compact ? 5 : 8
+    var smallH = compact ? 26 : Math.max(26, Math.round(32 * uiS))
+    var bottomH = twoRows ? (btnH + rowGap + smallH) : btnH
+
+    var budget = this.pageH - topY - topH - midGap * 2 - bottomH - bottomPad
+    var side = Math.min(maxSideW, budget)
+    var cell = Math.floor((side - (n - 1) * gap) / n)
+    if (cell < 8) cell = 8
+    var boardSide = cell * n + (n - 1) * gap
+    var boxSide = boardSide + 2            // +2：棋盘 1px 描边各占一边
+    var slack = this.pageH - (topY + topH + midGap + boxSide + midGap + bottomH + bottomPad)
+    if (slack < 0) slack = 0
+    var bx = Math.round((192 - boxSide) / 2)
+    var by = topY + topH + midGap + Math.round(slack / 2)
+    var btnT = by + boardSide + midGap
+
+    var out = {
+      cell: cell, gap: gap, topY: topY, topH: topH, maxSideW: maxSideW,
+      sf: (compact ? 12 : Math.max(11, Math.round(12 * uiS))) + (this.fontBump || 0),
+      navSize: navG.size,
+      navFont: navG.font,
+      navR: metrics.navRadius(navG.size),
+      bx: bx, by: by, bs: boxSide, boardSide: boardSide, btnH: btnH, smallH: smallH
+    }
+    if (twoRows) {
+      out.modeL = bx; out.modeT = btnT; out.modeW = boxSide; out.modeH = btnH
+      var sg = 6
+      out.tierW = Math.floor((boxSide - sg) / 2)
+      out.newW = boxSide - sg - out.tierW
+      out.tierH = smallH; out.newH = smallH
+      out.tierL = bx; out.newL = bx + out.tierW + sg
+      out.tierT = btnT + btnH + rowGap; out.newT = out.tierT
+    } else {
+      var sgap = 4
+      out.tierW = compact ? 36 : 44
+      out.newW = compact ? 32 : 40
+      out.tierH = btnH; out.newH = btnH
+      out.modeL = bx; out.modeT = btnT; out.modeH = btnH
+      out.modeW = boxSide - out.tierW - out.newW - sgap * 2
+      out.tierL = bx + out.modeW + sgap; out.tierT = btnT
+      out.newL = out.tierL + out.tierW + sgap; out.newT = btnT
+    }
+    return out
+  },
+
+  pickLayout() {
+    var a = this.buildLayout(true)
+    var b = this.buildLayout(false)
+    if (a.cell >= 22) return a                 // 两行版且格宽达标 → 更舒展
+    if (b.cell >= 22) return b                 // 两行版格太小 → 单行版腾高度
+    return a.cell >= b.cell ? a : b            // 都达不到 22 → 取格宽更大者
+  },
+
+  layout() {
+    var L = this.pickLayout()
+    this.cell = L.cell
+    this.gap = L.gap
+    this.topY = L.topY
+    this.topH = L.topH
+    this.hudW = L.maxSideW
+    this.sf = L.sf
+    this.navSize = L.navSize
+    this.navFont = L.navFont
+    this.navR = L.navR
+    this.bx = L.bx
+    this.by = L.by
+    this.bs = L.bs
+    this.modeL = L.modeL; this.modeT = L.modeT; this.modeW = L.modeW; this.modeH = L.modeH
+    this.tierL = L.tierL; this.tierT = L.tierT; this.tierW = L.tierW; this.tierH = L.tierH
+    this.newL = L.newL; this.newT = L.newT; this.newW = L.newW; this.newH = L.newH
+  },
+
+  // ── 渲染（全量重建 cells；与 monopoly 的 for 循环口径一致）──────────
+  buildCells() {
+    if (!this.st || !this.g) return
+    var n = this.st.size
+    var total = n * n
+    var cell = this.cell
+    var gap = this.gap
+    var fs = Math.max(10, Math.round(cell * 0.52))
+    var step = cell + gap
+    var arr = []
+    for (var i = 0; i < total; i++) {
+      var v = this.cellLook(i, this.st)
+      arr.push({
+        i: i,
+        left: (i % n) * step,
+        top: Math.floor(i / n) * step,
+        w: cell, h: cell,
+        t: v.t, fg: v.fg, bg: v.bg, bd: v.bd,
+        fs: fs, lh: cell
+      })
+    }
+    this.cells = arr
+  },
+
+  // 输入：格号、状态；输出：该格的显示字段 { t, fg, bg, bd }。
+  // 判负后展示全部雷：踩中的雷加红底；错插的旗显示「错」；判胜后未开的雷显示为「旗」。
+  cellLook(i, st) {
+    var opened = st.opened[i]
+    var flagged = st.flags[i]
+    var mine = st.cells[i] === 1
+    var showAll = st.over || st.revealAll
+    var closed = { t: '', fg: HIDDEN_BG, bg: HIDDEN_BG, bd: HIDDEN_BD }
+    var flag = { t: '旗', fg: FLAG_FG, bg: HIDDEN_BG, bd: HIDDEN_BD }
+    if (opened && !mine) {
+      var cnt = st.counts[i]
+      if (cnt > 0) return { t: String(cnt), fg: NUM_COLORS[cnt] || NUM_COLORS[7], bg: OPEN_BG, bd: OPEN_BD }
+      return { t: '', fg: OPEN_BG, bg: OPEN_BG, bd: OPEN_BD }
+    }
+    if (mine) {
+      if (st.win) return flag
+      if (showAll) {
+        var boom = (i === st.exploded)
+        return { t: '雷', fg: boom ? BOOM_FG : MINE_FG, bg: boom ? BOOM_BG : OPEN_BG, bd: boom ? BOOM_BG : OPEN_BD }
+      }
+      return flagged ? flag : closed
+    }
+    if (flagged) return showAll ? { t: '错', fg: WRONG_FG, bg: OPEN_BG, bd: OPEN_BD } : flag
+    return closed
+  },
+
+  // 顶栏/按钮文案与余雷数同步。
+  writeDerived() {
+    var flags = 0
+    if (this.st && this.st.flags) {
+      for (var i = 0; i < this.st.flags.length; i++) if (this.st.flags[i]) flags++
+    }
+    var left = (this.st ? this.st.mines : 0) - flags
+    this.minesLeft = String(left > 0 ? left : 0)
+    this.timeLabel = fmt(this.sec)
+    this.modeLabel = this.modeOpen ? '点开' : '插旗'
+    this.tierLabel = this.tier.label
+  },
+
+  // ── 操作 ────────────────────────────────────────────────────────
+  // 落点判定（坐标系口径见模板注释）：click 自带 offsetX/offsetY → 乘实测系数 → 棋盘内坐标 → 格号。
+  // 点缝里 / 点棋盘外 / 取不到坐标一律按无效处理（只给一次弱震动），绝不猜格号。
+  onBoardTap(e) {
+    if (this.dlg !== '') return
+    var ox = e && typeof e.offsetX === 'number' ? e.offsetX : -1
+    var oy = e && typeof e.offsetY === 'number' ? e.offsetY : -1
+    if (ox < 0 || oy < 0) { haptic.invalid(); return }
+    var idx = this.hitCell(ox, oy)
+    if (idx < 0) { haptic.invalid(); return }
+    if (this.modeOpen) this.doDig(idx)
+    else this.doFlag(idx)
+  },
+
+  // 输入：热区内的 offsetX/offsetY（client 单位）；输出：格号，或 -1（取不到系数 / 落在缝里或格外）。
+  hitCell(ox, oy) {
+    var n = this.st ? this.st.size : 0
+    var kx = this.clientKx
+    var ky = this.clientKy
+    if (!n || !kx || !ky) return -1
+    var step = this.cell + this.gap
+    var x = ox * kx - 1          // 减 1：棋盘 1px 描边，内区从 1px 起算
+    var y = oy * ky - 1
+    if (x < 0 || y < 0) return -1
+    var col = Math.floor(x / step)
+    var row = Math.floor(y / step)
+    if (col >= n || row >= n) return -1
+    if (x - col * step >= this.cell || y - row * step >= this.cell) return -1   // 格间缝 → 不算命中
+    return row * n + col
+  },
+
+  // 实测换算系数：设计像素 / client 单位 = 棋盘设计尺寸 / 热区实测尺寸。
+  // 热区尺寸随棋盘档位变，但两者是等比缩放 → 系数不变，故量一次即可；
+  // 量不到就沿用 screen.getLayout 的 designK（192/屏宽dp），绝不假设单位制。
+  measureTouch() {
+    var that = this
+    try {
+      this.$element('board').getBoundingClientRect({
+        success: function (r) {
+          if (r && r.width > 0 && r.height > 0) {
+            var kx = that.bs / r.width
+            var ky = that.bs / r.height
+            if (kx >= 0.25 && kx <= 4) that.clientKx = kx
+            if (ky >= 0.25 && ky <= 4) that.clientKy = ky
+          }
+        },
+        fail: function () {}
+      })
+    } catch (e) {}
+  },
+
+  // 按当前模式执行：点开模式 → 翻开；插旗模式 → 翻转旗标。
+  doDig(i) {
+    if (!this.st || this.st.over || this.st.win) { haptic.invalid(); return }
+    var wasStarted = this.st.started
+    var res = this.g.dig(this.st, i, this.randFn())
+    if (res.invalid) { haptic.invalid(); return }
+    this.st = res.state
+    if (!wasStarted && this.st.started) this.startTick()   // 首点布雷同时开始计时
+    haptic.place()
+    this.buildCells()
+    this.writeDerived()
+    if (res.exploded) { this.finishLose(); return }
+    if (this.st.win) { this.finishWin(); }
+  },
+
+  doFlag(i) {
+    if (!this.st || this.st.over || this.st.win) { haptic.invalid(); return }
+    var res = this.g.flag(this.st, i)
+    if (res.invalid) { haptic.invalid(); return }          // 插旗模式下点已开格 = 无效，不改盘面
+    this.st = res.state
+    haptic.place()
+    this.buildCells()
+    this.writeDerived()
+  },
+
+  toggleMode() {
+    this.modeOpen = !this.modeOpen
+    this.modeLabel = this.modeOpen ? '点开' : '插旗'
+    haptic.place()
+  },
+
+  finishLose() {
+    this.stopTick()
+    haptic.result()
+    this.loseSub = '本局用时 ' + this.timeLabel
+    this.dlg = 'lose'
+  },
+
+  finishWin() {
+    this.stopTick()
+    var size = this.tier.size
+    var old = this.bestMap[size] || 0
+    var isNew = (old === 0 || this.sec < old)
+    if (isNew) {
+      this.bestMap[size] = this.sec
+      config.saveSetting('minesweeper_best_' + size, this.sec)
+    }
+    this.winSub = '用时 ' + this.timeLabel + ' · ' + (isNew ? '新纪录！' : ('最快 ' + fmt(this.bestMap[size])))
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: true, time: this.sec }).then(function (info) {
+        if (info && info.text) that.winSub = that.winSub + ' · ' + info.text
+      })
+    }
+    this.dlg = 'win'
+    haptic.celebrate()
+    if (this.isChallenge) economy.completeDaily('minesweeper')
+  },
+
+  newGame() {
+    this.dlg = ''
+    this.stopTick()
+    this.sec = 0
+    this.st = this.g.newGame(this.tier.size, this.tier.mines).state
+    this.buildCells()
+    this.writeDerived()
+    haptic.place()
+  },
+
+  // 切到另一档并重开（档位变了、格宽也变，故先重算布局再开新局）。
+  switchTier() {
+    if (this.isChallenge) return   // 挑战固定 6×6 档，保证同日雷区可复现
+    this.tier = (this.tier === TIERS[0]) ? TIERS[1] : TIERS[0]
+    this.layout()
+    this.measureTouch()
+    this.newGame()
+  },
+
+  back() {
+    this.dlg = ''
+    this.stopTick()
+    router.back()
+  },
+
+  // 点蒙层：关闭当前弹窗（关闭后仍可用「新局」重开）
+  onMask() {
+    this.dlg = ''
+  },
+
+  noop() {}
+}
+</script>

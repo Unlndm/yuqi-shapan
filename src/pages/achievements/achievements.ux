@@ -1,0 +1,172 @@
+<!--
+  pages/achievements — 终身成就。
+  职责：展示 42 项成就（对局 / 棋种 / 赛季 / 收集 / 每日 / 残局六类）的名称、
+        进度 / 阈值、奖励与解锁状态；顶部汇总已解锁数与完成度。
+  数据：utils/economy.js 的 loadAch（终身计数 lifetime + 已解锁 achievements），
+        定义来自 economy-core.ACHIEVEMENTS / ACH_CATS。达标自动解锁并发币，本页无领取按钮。
+  换季只重置赛季任务，成就进度与解锁保留。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">成就</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" scroll-y="true" bounces="false">
+      <!-- 总览：已解锁 / 总数 / 完成度 -->
+      <div class="summary" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.primary}}">{{unlockedCount}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">已解锁</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{total}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">总成就</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{pctText}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">完成度</text>
+        </div>
+      </div>
+      <text class="hint" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">达标即自动解锁并发放棋币，只发一次；换季后进度与解锁状态保留。</text>
+
+      <!-- 分类分组：长列表交给原生 scroll -->
+      <div class="ach-group" for="{{(ci, cat) in cats}}">
+        <text class="sec-label" style="color:{{t.onSurfaceVariant}}">{{cat.name}} · {{cat.text}}</text>
+        <div class="ach-card" for="{{(ai, a) in cat.rows}}"
+             style="background-color:{{a.cardBg}}">
+          <div class="ach-line">
+            <text class="ach-name" style="color:{{a.nameColor}}">{{a.name}}</text>
+            <text class="ach-badge" style="background-color:{{a.badgeBg}};color:{{a.badgeFg}}">{{a.badgeText}}</text>
+          </div>
+          <text class="ach-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{a.progressText}} · 奖励 {{a.reward}} 棋币</text>
+          <div class="ach-track" style="background-color:{{t.surfaceVariant}}">
+            <div class="ach-fill" style="width:{{a.pctW}}px;background-color:{{a.barColor}}"></div>
+          </div>
+        </div>
+      </div>
+    </scroll>
+  </div>
+</template>
+
+<style>
+@import './achievements.css';
+@import '../../common/ui.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var economy = global.YQ.economy
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+
+// 进度条轨道宽度（px）：卡片 168 - 左右内边距 12×2 = 144；
+// 方屏卡片 176 宽，轨道保持 144（左侧对齐，右侧留白可接受，不用百分比宽度）。
+var TRACK_W = 144
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    fz: config.fontTokens('normal'),
+    unlockedCount: 0,
+    total: economy.ACHIEVEMENTS.length,
+    pctText: '0%',
+    cats: []
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    var that = this
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.pageH = cl.designH
+      config.applyFontBump(this, cl)
+    }
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+    })
+  },
+
+  onShow() {
+    var that = this
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：主题没变就不重设配色绑定
+      that.reload()
+    })
+  },
+
+  reload() {
+    var that = this
+    economy.loadAch().then(function (ach) {
+      that.renderAch(ach)
+    })
+  },
+
+  // 输入：已解锁 / 计数状态；输出：无（写入分类分组与汇总）
+  renderAch(ach) {
+    var counters = ach && ach.counters ? ach.counters : {}
+    var unlocked = ach && ach.unlocked ? ach.unlocked : {}
+
+    // variety：有对局记录的玩法种数（与 economy-core.deriveCounters 同口径，
+    // 防止旧存档尚未写入 variety 时该组进度显示为 0）
+    var variety = 0
+    for (var pk in counters) {
+      if (pk.indexOf('played_') === 0 && typeof counters[pk] === 'number' && counters[pk] > 0) variety++
+    }
+    counters.variety = variety
+
+    var cats = []
+    var total = 0
+    var totalUnlocked = 0
+    for (var i = 0; i < economy.ACH_CATS.length; i++) {
+      var c = economy.ACH_CATS[i]
+      var rows = []
+      var un = 0
+      for (var j = 0; j < economy.ACHIEVEMENTS.length; j++) {
+        var a = economy.ACHIEVEMENTS[j]
+        if (a.category !== c.id) continue
+        total++
+        var done = unlocked[a.id] === true
+        if (done) {
+          un++
+          totalUnlocked++
+        }
+        var cur = typeof counters[a.key] === 'number' && isFinite(counters[a.key]) ? counters[a.key] : 0
+        if (cur < 0) cur = 0
+        var shown = cur > a.threshold ? a.threshold : cur
+        rows.push({
+          id: a.id,
+          name: a.name,
+          reward: a.reward,
+          unlocked: done,
+          progressText: shown + '/' + a.threshold,
+          pctW: a.threshold > 0 ? Math.round(TRACK_W * shown / a.threshold) : 0,
+          cardBg: done ? this.t.surfaceContainerHigh : this.t.cardBg,
+          nameColor: done ? this.t.onSurface : this.t.onSurfaceVariant,
+          badgeText: done ? '已解锁' : '未解锁',
+          badgeBg: done ? this.t.primaryContainer : this.t.surfaceVariant,
+          badgeFg: done ? this.t.onPrimaryContainer : this.t.onSurfaceVariant,
+          barColor: done ? this.t.resultWin : this.t.primary
+        })
+      }
+      cats.push({ id: c.id, name: c.name, text: un + '/' + rows.length, rows: rows })
+    }
+
+    this.unlockedCount = totalUnlocked
+    this.total = total
+    this.pctText = total > 0 ? Math.round(totalUnlocked * 100 / total) + '%' : '0%'
+    this.cats = cats
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

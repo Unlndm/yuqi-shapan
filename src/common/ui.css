@@ -1,0 +1,85 @@
+/*
+ * common/ui.css — 全应用公共「表面 / 卡片」层（2026-10-30 UI 设计与排版重构）。
+ *
+ * 为什么单独有这个文件：
+ *   内容页此前各自维护一份 .page / .topbar / 卡片样式，圆角 12、内边距 10~14、
+ *   卡片标题 13~15 混用；同一个「总览卡」在 stats / achievements / puzzles / campaign
+ *   四个页面有 8 种写法。这里把「卡片」这一层收成唯一来源，页面 CSS 只保留本页
+ *   特有的排布（高度、列数、文字位置）。
+ *
+ * 引入方式：页面 <style> 里先 @import 本页 CSS，再 @import 本文件 —— 后引入者在
+ *   同优先级下覆盖前者，因此页面的历史值会被这里的口径收敛（迁移期无需一次删干净）。
+ *   新页面直接引本文件即可。
+ *
+ * 口径（与 utils/metrics.js 的 RADIUS.card / CARD / TYPE_SCALE 对齐）：
+ *   - 卡片 / 信息块 / 列表行：圆角 14（底色由主题 cardBg 内联绑定）
+ *   - 卡片标题：14（方屏 13、宽胶囊 16）
+ * 触摸目标（≥34）与弹窗按钮（130×40 / 140×34）不在本文件，仍由 metrics.js 管。
+ */
+
+/* ── 卡片表面：统一圆角（不描边：1px 边框会改变固定宽卡片的盒宽） ── */
+.summary,
+.g-row,
+.r-row,
+.hero,
+.info-block,
+.daily-card,
+.task-row,
+.shop-row,
+.skin-row,
+.ach-card,
+.srow,
+.sgroup,
+.h-row,
+.p-row,
+.lv-card {
+  border-radius: 14px;
+}
+
+/* ── 卡片标题：一档 14，避免 13/15 混排 ─────────────────────────── */
+.task-name,
+.shop-name,
+.skin-name,
+.ach-name,
+.p-name,
+.lv-name,
+.h-name,
+.g-name {
+  font-size: 14px;
+}
+
+/* ── 分屏型收敛（与 TYPE_SCALE 一致） ───────────────────────────── */
+@media screen and (shape: rect) {
+  .task-name,
+  .shop-name,
+  .skin-name,
+  .ach-name,
+  .p-name,
+  .lv-name,
+  .h-name,
+  .g-name {
+    font-size: 13px;
+  }
+}
+
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .task-name,
+  .shop-name,
+  .skin-name,
+  .ach-name,
+  .p-name,
+  .lv-name,
+  .h-name,
+  .g-name {
+    font-size: 16px;
+  }
+}
+
+
+@media screen and (shape: rect) {
+  .title {
+    text-align: right;
+    padding-left: 0px;
+    padding-right: 4px;
+  }
+}

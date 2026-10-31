@@ -1,0 +1,304 @@
+/*
+ * pages/sokoban 样式 — 单人推箱子（20 关）。
+ * 颜色全部内联绑定（骨架走 theme Token；墙/箱/箱在目标是固定语义色）。
+ * 尺寸/坐标由脚本内联绑定设计像素，CSS 只写「形状与骨架」（定位、圆角、排版、动效）。
+ * 布局：整页绝对定位叠放 —— 顶栏 / 棋盘滚动区 / 底部控件，互不挤压。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* ── 顶栏：圆形返回键 + 右侧两行状态（与 g2048 / slide / minesweeper 同口径） ── */
+.hud {
+  position: absolute;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-fab {
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+}
+
+.hud-stat {
+  flex: 1;
+  margin-left: 6px;
+  margin-right: 6px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* 矮画布顶栏右侧的「菜单」按钮（34×34，≥34 触摸目标；高画布不渲染） */
+.menu-fab {
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+}
+
+/* ── 棋盘滚动区：固定视口，棋盘（或居中留白）作为唯一内容 ───────────
+   scroll 子元素默认横向排列（见 game.css 注释），这里显式指定 column。 */
+.bscroll {
+  position: absolute;
+  flex-direction: column;
+}
+
+/* 舞台包围盒：尺寸 = max(视口, 棋盘)，由脚本内联绑定；只做坐标原点。
+   棋盘是它的**流式**子项（显式宽高 + 外边距偏移），不用绝对定位中间盒。 */
+.stage {
+  position: relative;
+}
+
+/* 棋盘盒：自身带底色，作为格的包含块；圆角裁切由 overflow:hidden 兜底。 */
+.board {
+  position: relative;
+  overflow: hidden;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.cell {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 3px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.cell-t {
+  width: 100%;
+  text-align: center;
+  font-weight: bold;
+}
+
+/* ── 底部控件：方向键 / 撤销·重置·帮助 / 上一关·下一关 ───────────── */
+.pad {
+  position: absolute;
+}
+
+.dbtn,
+.abtn,
+.lbtn {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 10px;
+  box-sizing: border-box;
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+}
+
+.dbtn {
+  font-size: 13px;
+}
+
+/* ── 抽屉（矮画布：重置 / 帮助 / 上一关 / 下一关） ────────────────
+   与 snake / game 同口径：遮罩 + 底部面板；胶囊屏单列 168×44，方屏双列 86×36。 */
+.drawer-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.5);
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.drawer {
+  width: 192px;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  padding-bottom: 16px;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+}
+
+.drawer-grip {
+  width: 32px;
+  height: 4px;
+  border-radius: 2px;
+  margin-bottom: 10px;
+}
+
+.d-grid {
+  width: 192px;
+  flex-direction: column;
+  align-items: center;
+}
+
+.d-item {
+  width: 168px;
+  height: 44px;
+  line-height: 44px;
+  border-radius: 22px;
+  font-size: 14px;
+  margin-bottom: 6px;
+  background-color: transparent;
+}
+
+/* ── 弹窗（样式口径与 g2048 / slide / minesweeper 一致） ─────────── */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.65);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.modal-title {
+  font-size: 17px;
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.modal-sub {
+  font-size: 12px;
+  line-height: 17px;
+  margin-top: 2px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+/* ── 动效层 ──────────────────────────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / animation /
+   @keyframes（0% 与 100% 必须都写）。只动 opacity / transform（GPU 友好），
+   一律挂在**静态 class** 上（元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-title-pop {
+  0% { opacity: 0; transform: scale(0.88); }
+  60% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal-title { animation: ui-title-pop 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-board-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.stage { animation: ui-board-in 240ms ease-out; }
+
+@keyframes ui-pad-in {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.pad { animation: ui-pad-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-hud-in {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.hud { animation: ui-hud-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 弹窗分机型档（2026-10-23）：默认 = 胶囊屏 150 宽 / 按钮 130×40；
+   rect = 160 宽 / 按钮 140×34（矮画布方屏三按钮弹窗约 181px，留出上下留白）。 */
+@media screen and (shape: rect) {
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+  /* 抽屉：方屏画布矮（228/300），4 项改双列 86×36（≥34），两行就放得下 */
+  .d-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .d-item {
+    width: 86px;
+    height: 36px;
+    line-height: 36px;
+    border-radius: 18px;
+    font-size: 12px;
+    margin-left: 2px;
+    margin-right: 2px;
+    margin-bottom: 4px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp）：方向键与抽屉项字号 +3，抽屉改 2 列 ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .dbtn {
+    font-size: 16px;
+  }
+  .d-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .d-item {
+    width: 82px;
+    height: 38px;
+    line-height: 38px;
+    border-radius: 19px;
+    font-size: 16px;
+    margin-left: 2px;
+    margin-right: 2px;
+    margin-bottom: 4px;
+  }
+  .modal-title {
+    font-size: 20px;
+    line-height: 27px;
+  }
+  .modal-sub {
+    line-height: 19px;
+  }
+  .m-btn {
+    font-size: 17px;
+  }
+}

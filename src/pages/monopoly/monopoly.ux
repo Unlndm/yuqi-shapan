@@ -1,0 +1,1439 @@
+<!--
+  pages/monopoly — 大富翁对局页（24 格精简盘面）。
+  职责：标准盘面渲染（色带/地名/价格/房屋旅馆标记/棋子/金额板/单骰）
+        + 开局设置（人机 / 双人热座）+ 完整标准规则交互
+        （掷骰确认 → 买地 / 拍卖 / 债务 / 盖房 / 抵押 / 赎回 → 结束回合）。
+  规则逻辑全部在 rules/monopoly.js（纯函数 + 单一动作入口，随机数可注入）；
+  页面只负责：驱动动作、演出动画、弹窗、播报。
+  界面约定（本轮玩家决策）：
+    · 金额显示在环内中间区域、骰子正上方；格内的等级标记用色块表示（房屋绿块 / 旅馆红块）。
+    · 不需要确定/取消的播报走系统 Toast；需要决定或看结果的一律页内弹窗，同一时刻只弹一个。
+    · 棋盘四周留 PAD=10 设计像素空白；默认档整盘可见（拖不动），放大档可拖到任意位置。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 开局设置面板（idle）。
+         ⚠️ 面板内容在方屏（画布高 300 / 228）上高于屏高 → 放进 scroll，
+         否则「玩法介绍 / 返回」被裁（与 game 页同一处理）。 -->
+
+    <!-- 开始页（仅方屏）：左上返回，右侧标题；对局中不渲染，游戏界面仍用抽屉 -->
+    <div class="setup-nav" if="{{rectScreen && state === 'idle'}}">
+      <input type="button" class="setup-nav-back" value="＜"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="exit" />
+      <text class="setup-nav-title" style="color:{{t.onSurface}}">大富翁</text>
+    </div>
+
+    <scroll class="panel-vp" if="{{state === 'idle'}}" scroll-y="true" bounces="true">
+      <div class="setup">
+        <text class="s-title" style="color:{{t.onSurface}}">大富翁</text>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">对战模式</text>
+        <div class="chips chips-mode">
+          <div class="chip chip-mode" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{m.n}}</text>
+          </div>
+        </div>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{modeHint}}</text>
+        <input type="button" class="s-start" value="继续上局" if="{{hasSave}}"
+               style="color:{{t.onSurface}};background-color:{{t.surface}};border-color:{{t.primaryContainer}}"
+               @click="continueGame" />
+        <input type="button" class="s-start" value="开始对局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="startMatch" />
+        <div class="s-secondary">
+        <input type="button" class="s-back s-half s-intro" value="玩法介绍"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="s-back s-half s-return" value="返 回"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="exit" />
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 匹配加载页（仅人机）：匹配成功后展示对手强度，自动进入对局 -->
+    <div class="matching" if="{{state === 'matching'}}">
+      <text class="s-title" style="color:{{t.onSurface}}">大富翁</text>
+      <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">人机对战</text>
+      <div class="m-dots">
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 0.2 : 1}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+      </div>
+      <text class="m-status" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{matchDone ? '匹配成功' : '正在匹配对手…'}}</text>
+      <text class="m-status" if="{{matchDone}}" style="color:{{t.primary}};font-size:{{fz.md}}px">对手强度 · {{matchLabel}}</text>
+      <input type="button" class="s-back" value="取 消"
+             style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+             @click="cancelMatch" />
+    </div>
+
+    <!-- 对局 -->
+    <block if="{{state === 'playing'}}">
+      <scroll class="board" id="scene" scroll-x="true" scroll-y="true" bounces="false">
+        <div class="stage" style="width:{{stageW}}px;height:{{stageH}}px">
+          <div class="ring" style="margin-left:{{ringX}}px;margin-top:{{ringY}}px;width:{{ringW}}px;height:{{ringH}}px">
+            <!-- 24 格：地产格＝浅底 + 顶部色带（名字深色、价格灰色）；特殊格＝整块色底 + 白字 -->
+            <div class="cell" for="{{(ci, c) in cells}}" @click="tapCell(ci)"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{$item.bg}};border-color:{{$item.border}}">
+              <div class="cell-band" if="{{$item.bandH > 0}}" style="height:{{$item.bandH}}px;background-color:{{$item.band}}"></div>
+              <text class="cell-name" style="color:{{$item.fg}};font-size:{{$item.fs1}}px;line-height:{{$item.lh1}}px">{{$item.name}}</text>
+              <text class="cell-price" if="{{$item.sub}}" style="color:{{$item.subFg}};font-size:{{$item.fs2}}px;line-height:{{$item.lh2}}px">{{$item.sub}}</text>
+              <div class="mark" for="{{(mi, m) in $item.marks}}"
+                   style="left:{{m.left}}px;bottom:{{m.bottom}}px;width:{{m.w}}px;height:{{m.h}}px;background-color:{{m.color}}"></div>
+            </div>
+            <!-- 双方棋子（原创 AI 位图徽章）：蓝＝蓝方、红＝红方 -->
+            <image class="token" for="{{tokens}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;border-radius:{{$item.r}}px"
+                   src="{{$item.img}}"></image>
+            <!-- 环内状态行（回合 + 轮到谁）：放在金额板正上方，随棋盘一起滚动 -->
+            <text class="ring-status" style="left:{{ringStatusX}}px;top:{{statusY}}px;width:{{ringStatusW}}px;height:{{statusH}}px;color:{{turnColor}};font-size:{{statusFs}}px;line-height:{{statusH}}px">{{round}}/{{maxRounds}} · {{turnText}}</text>
+            <!-- 环内：金额板（骰子正上方） -->
+            <div class="money-plate" style="left:{{moneyX}}px;top:{{moneyY}}px;width:{{moneyW}}px;height:{{moneyH}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+              <div class="mp-row" for="{{moneyRows}}">
+                <text class="mp-name" style="color:{{$item.color}};font-size:{{$item.fs}}px">{{$item.name}}</text>
+                <text class="mp-money" style="color:{{$item.color}};font-size:{{$item.fs}}px">{{$item.money}}</text>
+              </div>
+            </div>
+            <!-- 单颗骰子（玩家要求「一个骰子轮流投」）：位图 + 其上透明热区（点击即弹确认框） -->
+            <image class="dice-disc" style="left:{{diceX}}px;top:{{diceY}}px;width:{{diceW}}px;height:{{diceW}}px;border-radius:{{diceR}}px" src="{{diceImgA}}"></image>
+            <div class="dice-hit" style="left:{{diceX}}px;top:{{diceY}}px;width:{{diceHitW}}px;height:{{diceW}}px" @click="tapDice"></div>
+            <!-- 胶囊屏「菜单」兜底出口：部分手环 ROM 不派发侧滑返回手势 → 环内常显一个「菜单」按钮，
+                 点开控制抽屉（抽屉里才有「退出对局」）。位置在骰子左侧的环内空档，不压任何格子；
+                 方屏隐藏（有返回键/手势），见 monopoly.css 的 rect 媒体查询。 -->
+            <input type="button" class="menu-fab" value="菜单"
+                   style="left:{{menuBtnX}}px;top:{{menuBtnY}}px;width:{{menuBtnW}}px;height:{{menuBtnH}}px;font-size:{{menuBtnFs}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                   @click="openMenu" />
+            <!-- 环内底部：本回合操作（结束回合 / 资产管理） -->
+            <input type="button" class="m-btn" value="结束回合" if="{{showEndTurn}}"
+                   style="left:{{actX}}px;top:{{actY}}px;width:{{actW}}px;position:absolute;height:{{actH}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                   @click="doEndTurn" />
+            <input type="button" class="m-btn" value="{{actLabel}}" if="{{showActs}}"
+                   style="left:{{actX}}px;top:{{actY2}}px;width:{{actW}}px;position:absolute;height:{{actH}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                   @click="openActSheet" />
+          </div>
+        </div>
+      </scroll>
+    </block>
+
+    <!-- 通用弹窗（同一时刻只弹一个：dlg 单字段驱动） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMaskTap">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <!-- 格子信息：点棋盘任意格查看地价 / 当前租金 / 归属 -->
+        <block if="{{dlg === 'cell'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">{{cellInfo.fullName}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{cellInfo.infoType}} · {{cellInfo.ownerText}}</text>
+          <text class="modal-sub" if="{{cellInfo.priceText}}" style="color:{{t.onSurfaceVariant}}">地价 {{cellInfo.priceText}}</text>
+          <text class="modal-sub" if="{{cellInfo.rentText}}" style="color:{{t.onSurfaceVariant}}">当前租金 {{cellInfo.rentText}}</text>
+          <input type="button" class="m-btn" value="关 闭"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeCell" />
+        </block>
+        <!-- 掷骰确认（双人模式下兼作交接确认） -->
+        <block if="{{dlg === 'roll'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">投骰子</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">轮到 {{dlgWho}}。投一颗骰子前进。</text>
+          <input type="button" class="m-btn" value="投骰子"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="confirmRoll" />
+          <input type="button" class="m-btn" value="取消"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="closeDlg" />
+        </block>
+
+        <!-- 买地 -->
+        <block if="{{dlg === 'buy'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">{{buyName}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">地价 {{buyPrice}} 元。放弃将进入拍卖。</text>
+          <input type="button" class="m-btn" value="买下 {{buyPrice}}"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="doBuy" />
+          <input type="button" class="m-btn" value="放弃（拍卖）"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="doDeclineBuy" />
+        </block>
+
+        <!-- 拍卖 -->
+        <block if="{{dlg === 'auction'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">拍卖 {{buyName}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">当前叫价 {{bidHigh}} 元 · {{bidWho}}</text>
+          <input type="button" class="m-btn" value="加价 {{bidNext}}"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="doBid" />
+          <input type="button" class="m-btn" value="放弃"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="doPassBid" />
+        </block>
+
+        <!-- 机会 / 命运结果 -->
+        <block if="{{dlg === 'card'}}">
+          <text class="modal-title" style="color:{{cardColor}}">{{cardTitle}}</text>
+          <text class="modal-sub" style="color:{{t.onSurface}}">{{cardText}}</text>
+          <text class="modal-sub" style="color:{{cardDeltaColor}}">{{cardDeltaText}}</text>
+          <input type="button" class="m-btn" value="知道了"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+        </block>
+
+        <!-- 债务清偿 / 资产管理（同一套行列表） -->
+        <block if="{{dlg === 'debt' || dlg === 'act'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">{{sheetTitle}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{sheetSub}}</text>
+          <scroll class="m-list" scroll-y="true">
+            <div class="row-act" for="{{(ri, r) in actRows}}"
+                 style="background-color:{{t.surfaceContainer}};border-color:{{t.outline}}"
+                 @click="doActRow(ri)">
+              <text class="row-act-name" style="color:{{r.color}}">{{r.name}}</text>
+              <text class="row-act-sub" style="color:{{t.onSurfaceVariant}}">{{r.sub}}</text>
+            </div>
+          </scroll>
+          <input type="button" class="m-btn" if="{{canSettle}}" value="付清 {{debtAmount}}"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="doSettleDebt" />
+          <input type="button" class="m-btn" if="{{dlg === 'debt'}}" value="宣布破产"
+                 style="color:{{t.error}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="doBankrupt" />
+          <input type="button" class="m-btn" if="{{dlg === 'act'}}" value="完 成"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="closeDlg" />
+        </block>
+
+        <!-- 离开对局确认 -->
+        <block if="{{dlg === 'exit'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">离开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">回到主页可稍后「继续上局」</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+          <input type="button" class="m-btn" value="回到主页"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(true)" />
+          <input type="button" class="m-btn" value="狠心离开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(false)" />
+        </block>
+
+        <!-- 终局 -->
+        <block if="{{dlg === 'over'}}">
+          <text class="modal-title" style="color:{{resultColor}}">{{resultText}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{resultReason}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="playAgain" />
+          <input type="button" class="m-btn" value="返回主页"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="exit" />
+        </block>
+      </div>
+    </div>
+
+    <!-- 抽屉面板：缩放 / 重开 / 退出（侧滑返回呼出） -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <!-- 条目容器：胶囊屏单列；方屏画布矮 → rect 档改双列网格（每格 86×36 ≥34） -->
+        <div class="d-grid">
+          <input type="button" value="放大棋盘" class="d-item" disabled="{{zoomIdx >= 3}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(1)" />
+          <input type="button" value="缩小棋盘" class="d-item" disabled="{{zoomIdx <= 0}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(-1)" />
+          <input type="button" value="重开新局" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuRestart" />
+          <input type="button" value="退出对局" class="d-item"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}" @click="menuExit" />
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './monopoly.css';
+</style>
+
+<script>
+/**
+ * 大富翁页脚本。
+ * state：idle(开局设置) → matching(人机匹配) → playing(对局) → over(终局弹窗)。
+ * 对局状态机由规则层驱动：state.pending 表示「现在必须做什么」
+ *   roll(掷骰) / buy(买地) / auction(拍卖) / debt(偿债) / endTurn(可操作或交棒) / over。
+ * 页面职责：驱动动作（人机共用 applyAction 入口）、逐格动画、弹窗、Toast 播报。
+ * 双人热座：两名玩家在本机轮流操作，掷骰确认弹窗兼作交接确认。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var toastMod = global.YQ.toast
+var economy = global.YQ.economy
+var mpFactory = require('../../rules/monopoly.js')
+var rng = global.YQ.rng
+
+var N = 24            // 盘面格数（6 色组 × 2 块地 + 4 铁路 + 2 公用事业 + 6 特殊格）
+var PAD = 2           // 环体到屏幕边缘的留白（玩家要求「占满整个屏幕」，故只留 2px）
+var GAP = 3           // 格与格之间的最小缝（其余缝隙按屏幕纵横比均摊，见 baseRing）
+var SLACK = 26        // 可拖动余量：盘面外再留一圈，好把被屏幕圆角切掉的四个角拖出来
+var EDGE = 4          // 环体内的边距
+var SAVE_V = 2        // 存档版本（旧档结构不同，直接丢弃）
+var STEP_MS = 90      // 逐格动画间隔
+
+// 盘面固定色（不随主题切换）：铁路 / 公用事业 / 各类特殊格（对齐参考设计：整块色底 + 白字）
+var RAIL_BG = '#8A8577'
+var UTIL_BG = '#8FA6B8'
+var START_BG = '#F2C230'
+var JAIL_BG = '#6E6A78'
+var GOJAIL_BG = '#4A4652'
+var CARD_BG = '#E05C8A'
+var TAX_BG = '#CFCBDF'
+var PROP_BG = '#F2EFE9'   // 地产格浅底（色带在顶部，名字/价格压在浅底上）
+var PROP_FG = '#1D1B20'
+var PROP_SUB_FG = '#6B6B6B'
+var CARD_BORDER = 'rgba(0,0,0,0.22)'   // 未售格描边（浅色盘面上很轻的一道边）
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    rectScreen: false,
+    fz: config.fontTokens('normal'),
+    boardH: 300,
+    uiS: 1,
+    fontSizeName: 'normal',
+    isPill: true,
+    state: 'idle',
+    mode: 'ai',
+    modes: [],
+    modeHint: '你是蓝方，对手是红方。',
+    hasSave: false,
+    matchDone: false,
+    matchLabel: '',
+    breathOn: true,
+    zoomIdx: 1,
+    // 缩放档：0.7 看全局 → 1 默认（格 24px，盘面已大于视口）→ 1.3/1.7 看细节
+    zoomSteps: [0.7, 1, 1.3, 1.7],
+    ringW: 168,
+    ringH: 300,
+    ringX: 8,
+    ringY: 10,
+    stageW: 192,
+    stageH: 300,
+    cells: [],
+    tokens: [],
+    moneyRows: [],
+    moneyX: 20,
+    moneyY: 100,
+    moneyW: 120,
+    moneyH: 40,
+    diceX: 60,
+    diceY: 150,
+    diceR: 5,
+    diceHitW: 70,
+    diceA: '0',
+    diceImgA: themeMod.diceImage('0'),
+    diceSkinKey: themeMod.skinKey(),   // 骰子皮肤签名：从商店换装回来时据此刷新骰面
+    diceX0: 60,
+    diceY0: 150,
+    diceW0: 28,
+    // 胶囊屏「菜单」兜底按钮（首帧占位，layoutBoard 每次重算）
+    menuBtnX: 20,
+    menuBtnY: 155,
+    menuBtnW: 34,
+    menuBtnH: 22,
+    menuBtnFs: 11,
+    hop: 0,              // 逐格前进时棋子的尺寸加成（跳跃手感）
+    hopPlayer: -1,
+    flashCell: -1,       // 落点格高亮（落定后闪一下）
+    geoCw: 22,           // layoutBoard 缓存下来的几何（syncTokens 复用，避免动画每拍重算）
+    ringBaseKey: 0,      // baseRing 缓存键（pageH）
+    ringBase: null,      // baseRing 结果 {a,b,cw,gh,gv}
+    innerW: 96,          // 左右两列格子之间的净宽（环内 UI 的宽度上限）
+    geoCh: 22,
+    cellPos: [],
+    actX: 40,
+    actY: 200,
+    actY2: 244,
+    actW: 112,
+    actH: 36,
+    showEndTurn: false,
+    showActs: false,
+    actLabel: '资产管理',   // 有免狱卡且在监狱时改为「资产 / 免狱」，让道具可被发现
+    jailCards: 0,          // 赛季商店买的免狱卡库存（仅本机玩家可用）
+    turnText: '',
+    turnColor: '',
+    statusY: 60,
+    statusH: 20,
+    statusFs: 13,
+    ringStatusX: 4,
+    ringStatusW: 260,
+    round: 1,
+    maxRounds: 30,
+    dlg: '',
+    dlgWho: '',
+    buyName: '',
+    buyPrice: 0,
+    cellInfo: null,
+    bidHigh: 0,
+    bidWho: '',
+    bidNext: 10,
+    cardTitle: '',
+    cardText: '',
+    cardDeltaText: '',
+    cardDelta: 0,
+    cardColor: '',
+    cardDeltaColor: '',
+    sheetTitle: '',
+    sheetSub: '',
+    actRows: [],
+    canSettle: false,
+    debtAmount: 0,
+    resultText: '',
+    resultReason: '',
+    resultColor: '',
+    showMenu: false
+  },
+
+  onInit() {
+    // 首帧先铺默认模式选项，异步设置回来后再校正
+    this.syncSetupUI()
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    // 每日挑战：种子驱动骰子/抽卡/AI 决策；普通局不创建 RNG（randValue 返回 undefined）
+    this.isChallenge = Number(this.challenge) === 1
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'monopoly')
+      this.dailyRng = rng.create(seedNum)
+    }
+    // 闯关模式：强制人机 + 关卡难度，跳过匹配与开局面板
+    this.isCampaign = !this.isChallenge && !!this.campaignId
+    this.campaignDiffName = this.campaignDiff === 'easy' || this.campaignDiff === 'hard'
+      ? this.campaignDiff : 'normal'
+    this.mp = mpFactory.create('normal')
+    this.st = this.mp.newGame()
+    // 显示用棋子位置：逐格动画只改它，绝不改 this.st.pos（改了会让引擎重复前进）
+    this.dispPos = [0, 0]
+    this.timers = []
+    this.savedSnap = null
+    this.busy = false
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('mode', 'ai'),
+      config.getPref('save_monopoly', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      var mode = vals[1]
+      var snap = vals[2]
+      that.pageH = l.designH
+      that.rectScreen = l.profile === 'rect'
+      that.boardH = Math.max(200, l.designH)
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.syncFonts()
+      that.mode = (that.isChallenge || that.isCampaign) ? 'ai' : (mode === 'pvp' ? 'pvp' : 'ai')
+      that.syncModeHint()
+      that.syncSetupUI()
+      // 挑战/闯关模式：固定难度、直接开局（跳过匹配页），不读普通存档
+      if (that.isChallenge || that.isCampaign) {
+        that.difficulty = that.isCampaign ? that.campaignDiffName : 'normal'
+        that.newRound()
+        return
+      }
+      if (snap && snap.v === SAVE_V && snap.st) {
+        that.savedSnap = snap
+        that.hasSave = true
+      }
+      that.buildBoard()
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：没换主题/字号就不重设配色绑定（重绑整页 = 闪）
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      that.buildBoard()
+    })
+  },
+
+  // 字号随屏型收敛：fz 走内联绑定，CSS 媒体查询覆盖不到
+  syncFonts() {
+    var b = config.fontTokens(this.fontSizeName, this.fontBump || 0)
+    var s = this.uiS
+    this.fz = { md: Math.max(9, Math.round(b.md * s)), sm: Math.max(8, Math.round(b.sm * s)) }
+  },
+
+  syncModeHint() {
+    this.modeHint = this.mode === 'pvp'
+      ? '双人同机轮流：1 号＝蓝方，2 号＝红方。'
+      : '你是蓝方，对手是红方（强度按战绩匹配）。'
+  },
+
+  // ── 开局设置 ────────────────────────────────────────────────────
+  syncSetupUI() {
+    var modes = []
+    for (var i = 0; i < config.MODES.length; i++) {
+      modes.push({ v: config.MODES[i].v, n: config.MODES[i].n, sel: config.MODES[i].v === this.mode })
+    }
+    this.modes = modes
+  },
+
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m || this.mode === m.v) return
+    this.mode = m.v
+    this.syncModeHint()
+    this.syncSetupUI()
+  },
+
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  startMatch() {
+    this.dlg = ''
+    config.saveSetting('mode', this.mode)
+    this.matchDone = false
+    this.matchLabel = ''
+    var that = this
+    if (this.mode === 'pvp') {
+      // 双人：无匹配演出，直接开局
+      this.newRound()
+      return
+    }
+    this.state = 'matching'
+    this.startBreath()
+    config.matchDifficulty('monopoly').then(function (d) {
+      that.difficulty = d
+    })
+    this.after(900 + Math.floor(Math.random() * 500), function () {
+      that.matchDone = true
+      that.matchLabel = that.difficulty === 'easy' ? '简单' : that.difficulty === 'hard' ? '困难' : '普通'
+      haptic.place()
+      that.after(800, function () { that.newRound() })
+    })
+  },
+
+  // 开新局（人机 / 双人共用）
+  newRound() {
+    var that = this
+    // 挑战/闯关模式不清普通对局存档（普通进度保留）
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_monopoly')
+      this.savedSnap = null
+      this.hasSave = false
+    }
+    this.mp = mpFactory.create(this.difficulty || 'normal')
+    this.st = this.mp.newGame()
+    this.state = 'playing'
+    this.zoomIdx = 1
+    this.showDice(0)
+    this.dlg = ''
+    this.dispPos = [this.st.pos[0], this.st.pos[1]]
+    this.buildBoard()
+    this.syncTurn()
+    // 盘面大于视口：进入对局先把摄像机对准盘面中心（状态行/金额板/骰子都在正中）
+    this.after(80, function () { that.centerScene() })
+    toastMod.toast('对局开始 · 蓝方先手')
+    this.drive()
+  },
+
+  cancelMatch() {
+    this.clearTimers()
+    this.state = 'idle'
+  },
+
+  continueGame() {
+    var that = this
+    var snap = this.savedSnap
+    if (!snap || !snap.st) { this.newRound(); return }
+    this.difficulty = snap.difficulty || 'normal'
+    this.mp = mpFactory.create(this.difficulty)
+    this.st = snap.st
+    this.mode = snap.mode === 'pvp' ? 'pvp' : 'ai'
+    this.syncModeHint()
+    this.state = 'playing'
+    this.dispPos = [this.st.pos[0], this.st.pos[1]]
+    this.buildBoard()
+    this.syncTurn()
+    // 盘面大于视口：进入对局先把摄像机对准盘面中心（状态行/金额板/骰子都在正中）
+    this.after(80, function () { that.centerScene() })
+    toastMod.toast('已恢复上局')
+    this.drive()
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() {
+    screen.keepScreenOn(true)
+    // 读赛季道具库存（免狱卡）；在赛季商店买完回来即刻生效
+    var that = this
+    economy.load().then(function (st) { that.jailCards = st.items.jailCard })
+    // 设置/皮肤可能在商店或设置页改过：回到本页同步一次（applyTheme 判重，没变不重绑）
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      var key = themeMod.skinKey()
+      if (that.diceSkinKey !== key) {
+        that.diceSkinKey = key
+        that.diceImgA = themeMod.diceImage(that.diceA)   // 当前骰面 → 新皮肤，不跳回初始面
+      }
+    })
+  },
+  onHide() { screen.keepScreenOn(false) },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimers()
+    this.timers = null
+  },
+
+  onBackPress() {
+    if (this.state !== 'playing') return false
+    if (this.dlg !== '') return false        // 弹窗优先由框架关闭
+    this.openMenu()
+    return true
+  },
+
+  // 环内「菜单」按钮（仅非方屏显示）：与侧滑返回同一条路径 —— 部分手环 ROM 不派发返回手势，
+  // 这是那些机型唯一的出口（抽屉里才有「退出对局」）。弹窗开着时不叠加抽屉。
+  openMenu() {
+    if (this.dlg !== '') return
+    this.showMenu = true
+  },
+
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  startBreath() {
+    var that = this
+    this.after(500, function tick() {
+      if (that.state !== 'matching') return
+      that.breathOn = !that.breathOn
+      that.after(500, tick)
+    })
+  },
+
+  // ── 渲染同步 ────────────────────────────────────────────────────
+  // 24 格：上 7（含两角）→ 右 5 → 下 7 → 左 5。
+  // 尺寸口径（本轮按玩家要求再改）：**格子正方形、格与格之间留缝、盘面贴着屏幕**。
+  //   · 格宽由屏幕宽度反推（**不乘 uiS**，否则大屏方表上盘面会缩进去、离屏幕太远）；
+  //   · 格高 = 格宽（正方形）；横向缝固定 GAP，侧边 5 格摊在整屏高上（缝会更大，几何必然）；
+  //   · 环体贴屏幕（只留 PAD=2），场景四周多留 SLACK 可拖余量 → 拖动可看到被圆角切掉的四个角。
+  // 拆成两段以省渲染开销（性能）：**布局 + 24 个静态格**只在缩放/状态变化时重建；
+  // **棋子**在逐格动画的每一拍只重建这一段。原实现每个动画拍都全量重建盘面
+  // （24 个格对象 × 12 个字段 + 名称/描边/房屋标记计算 + 环内竖排全部重算），在 90ms 的拍间隔里是纯浪费。
+  buildBoard() {
+    this.layoutBoard()
+    this.syncTokens()
+  },
+
+  // 基础环几何（z=1）：正方形格 + 缝隙尽量均匀 + 盘面贴满屏幕。
+  // 24 格 => 上下 a 格（含两角）+ 左右 b 格：2a+2b−4 = 24（a+b=14）。
+  // 竖长屏若固定 7/5，左右只有 5 格要摊满 486px → 侧缝约 52px、上下只有 3px（玩家反馈）。
+  // 这里枚举 a，按「最大缝最小」选方案：跑道屏选出 4/10，方屏按各自高度选出 5~6 格。
+  // 结果按 pageH 缓存：缩放档位只等比放大，不重排格数。
+  baseRing() {
+    var key = this.pageH
+    if (this.ringBaseKey === key && this.ringBase) return this.ringBase
+    var usableW = 192 - 2 * PAD - 2 * EDGE
+    var usableH = this.pageH - 2 * PAD - 2 * EDGE
+    var half = N / 2 + 2
+    var best = null
+    for (var a = 3; a <= half - 3; a++) {
+      var b = half - a
+      if (b < 3) continue
+      var cw = Math.floor(Math.min((usableW - (a - 1) * GAP) / a, (usableH - (b - 1) * GAP) / b))
+      if (cw < 10) continue
+      var gh = (usableW - a * cw) / (a - 1)
+      var gv = (usableH - b * cw) / (b - 1)
+      var worst = gh > gv ? gh : gv
+      if (!best || worst < best.worst - 0.01 ||
+          (Math.abs(worst - best.worst) <= 0.01 && cw > best.cw)) {
+        best = { a: a, b: b, cw: cw, gh: gh, gv: gv, worst: worst }
+      }
+    }
+    if (!best) best = { a: 4, b: 10, cw: 20, gh: GAP, gv: GAP, worst: 99 }
+    this.ringBaseKey = key
+    this.ringBase = best
+    return best
+  },
+
+  // 布局 + 静态格 + 环内竖排（缩放档位、盘面状态、落点高亮变化时才需要重跑）
+  layoutBoard() {
+    var t = this.t
+    var z = this.zoomSteps[this.zoomIdx]
+    // 格数与缝隙由屏幕纵横比决定（见 baseRing），缩放时整体等比放大/缩小 ——
+    // 不再出现「左右缝被拉大、上下只有 3px」的竖长屏畸变（玩家 2026-10-23 反馈）。
+    var base = this.baseRing()
+    var cw = Math.max(10, Math.round(base.cw * z))
+    var ch = cw
+    var gh = Math.max(1, Math.round(base.gh * z))
+    var gv = Math.max(1, Math.round(base.gv * z))
+    var topN = base.a
+    var sideN = base.b - 2
+    var ringW = 2 * EDGE + cw * topN + (topN - 1) * gh
+    var ringH = 2 * EDGE + cw * base.b + (base.b - 1) * gv
+    this.stageW = Math.max(192, ringW + 2 * SLACK)
+    this.stageH = Math.max(this.pageH, ringH + 2 * SLACK)
+    this.ringX = Math.round((this.stageW - ringW) / 2)
+    this.ringY = Math.round((this.stageH - ringH) / 2)
+
+    var topY = EDGE
+    var botY = EDGE + (base.b - 1) * (cw + gv)
+    var sideY = []
+    for (var j = 0; j < sideN; j++) sideY.push(EDGE + (j + 1) * (cw + gv))
+    var xs = []
+    for (var i = 0; i < topN; i++) xs.push(EDGE + i * (cw + gh))
+    var rightX = EDGE + (topN - 1) * (cw + gh)
+    var leftX = EDGE
+
+    // 24 格的坐标（行进方向：上左→上右→右侧下行→下右→下左→左侧上行）
+    var pos = []
+    for (i = 0; i < topN; i++) pos.push([xs[i], topY])
+    for (j = 0; j < sideN; j++) pos.push([rightX, sideY[j]])
+    for (i = 0; i < topN; i++) pos.push([xs[topN - 1 - i], botY])
+    for (j = 0; j < sideN; j++) pos.push([leftX, sideY[sideN - 1 - j]])
+
+    // 正方形格里要塞「色带 + 地名 + 价格」三行：字号按格宽取小一点，行高贴字高，
+    // 装得下才排价格行（否则退回只显示地名）。
+    var bandH = Math.max(4, Math.round(ch * 0.17))
+    var fs1 = Math.max(7, Math.min(11, Math.round(cw * 0.36)))
+    var lh1 = fs1 + 1
+    var fs2 = Math.max(6, fs1 - 1)
+    var lh2 = fs2 + 1
+    var roomForPrice = (bandH + lh1 + lh2) <= (ch - 2)
+    var cells = []
+    var s = this.st
+    for (var k = 0; k < N; k++) {
+      var c = this.mp.BOARD[k]
+      var owner = s.owner[k]
+      var bg = PROP_BG
+      var fg = PROP_FG
+      var subFg = PROP_SUB_FG
+      var band = ''
+      var sub = ''
+      var marks = []
+      if (c.type === 'prop') {
+        // 地产格：浅底 + 顶部色带（对齐参考设计），名字深色、价格灰色
+        band = this.mp.GROUPS[c.group].color
+        sub = owner < 0 ? String(c.price) : ''
+        if (owner >= 0 && s.houses[k] > 0) marks = this.houseMarks(k, cw, ch, bg)
+      } else if (c.type === 'rail') {
+        bg = RAIL_BG; fg = '#FFFFFF'; subFg = '#EDEAE3'; sub = String(c.price)
+      } else if (c.type === 'util') {
+        bg = UTIL_BG; fg = '#FFFFFF'; subFg = '#EDEAE3'; sub = String(c.price)
+      } else if (c.type === 'tax') {
+        bg = TAX_BG; fg = '#1D1B20'; subFg = '#5A5566'; sub = String(c.amount)
+      } else if (c.type === 'start') {
+        bg = START_BG; fg = '#1D1B20'
+      } else if (c.type === 'jail') {
+        bg = JAIL_BG; fg = '#FFFFFF'
+      } else if (c.type === 'gojail') {
+        bg = GOJAIL_BG; fg = '#FFFFFF'
+      } else if (c.type === 'chance' || c.type === 'chest') {
+        bg = CARD_BG; fg = '#FFFFFF'
+      }
+      if (!roomForPrice) sub = ''
+      cells.push({
+        x: pos[k][0],
+        y: pos[k][1],
+        w: cw,
+        h: ch,
+        bg: bg,
+        fg: fg,
+        subFg: subFg,
+        band: band,
+        bandH: band ? bandH : 0,
+        // 完整地名按「字数×字号」判断装不装得下，装不下退回 1 字简称
+        name: (c.name.length * fs1) <= (cw - 4) ? c.name : c.short,
+        fullName: c.name,
+        sub: sub,
+        marks: marks,
+        border: k === this.flashCell ? t.primary : (owner === 0 ? t.primary : (owner === 1 ? t.error : CARD_BORDER)),
+        fs1: fs1,
+        fs2: fs2,
+        lh1: lh1,
+        lh2: lh2,
+        infoType: c.type === 'prop' ? '地产' : (c.type === 'rail' ? '铁路' : (c.type === 'util' ? '公用事业' : (c.type === 'chance' ? '机会' : (c.type === 'chest' ? '命运' : (c.type === 'start' ? '起点' : (c.type === 'jail' ? '监狱' : '特殊格')))))),
+        priceText: c.price ? String(c.price) : '',
+        rentText: (c.type === 'prop' && c.rent) ? String(c.rent[Math.min(s.houses[k] || 0, 5)]) : '',
+        ownerText: owner < 0 ? '无人持有' : (owner === 0 ? '蓝方持有' : '红方持有')
+      })
+    }
+    this.cells = cells
+
+    // 环内正中自上而下：状态行 → 金额板 → 单颗骰子 → 两个操作按钮 → 胶囊屏「菜单」。
+    // 全部元素宽度收敛到「左右两列格子之间的净宽」innerW —— 新盘面（上下 4 格、左右 10 格）
+    // 的两列更宽，若继续用 150 宽的金额板会压到侧边格子上。
+    // 各块尺寸按「环内可用高度」缩放并设下限 —— 矮屏 / 缩小档位下环体很扁，
+    // 固定尺寸的竖排会顶穿上下两排格子（实测 REDMI Watch 5 的 228 画布会溢 55px）。
+    var innerX = EDGE + cw
+    var innerW = rightX - innerX
+    var menuH = this.isPill ? 34 : 0
+    var menuGap = menuH > 0 ? 4 : 0
+    var availH = Math.max(40, ringH - 2 * EDGE - 2 * ch)
+    var statusH = Math.min(Math.round(20 * this.uiS), Math.max(11, Math.round(availH * 0.09)))
+    var moneyH = Math.min(Math.round(40 * this.uiS), Math.max(18, Math.round(availH * 0.17)))
+    var diceW = Math.min(Math.round(38 * this.uiS), Math.max(15, Math.round(availH * 0.19)))
+    var actH = Math.min(Math.round(36 * this.uiS), Math.max(16, Math.round(availH * 0.14)))
+    var contentH = statusH + 4 + moneyH + 4 + diceW + 4 + actH * 2 + 4 + menuGap + menuH
+    var stackTop = Math.round((topY + ch + botY) / 2 - contentH / 2)
+    this.statusY = stackTop
+    this.statusH = statusH
+    // 状态行文案已缩短（「1/30 · 蓝方」），字号再按净宽收敛，避免竖长屏上挤出格子外
+    this.statusFs = Math.max(9, Math.min(Math.round(13 * this.uiS) + (this.fontBump || 0), Math.floor(innerW / 9)))
+    this.ringStatusX = innerX
+    this.ringStatusW = innerW
+    var moneyW = Math.min(innerW - 2, Math.round(150 * this.uiS))
+    this.moneyX = innerX + Math.round((innerW - moneyW) / 2)
+    this.moneyY = stackTop + statusH + 4
+    this.moneyW = moneyW
+    this.moneyH = moneyH
+    this.diceW = diceW
+    this.diceR = Math.round(diceW * 0.18)
+    this.diceX = innerX + Math.round((innerW - diceW) / 2)
+    this.diceY = this.moneyY + moneyH + 4
+    this.diceHitW = diceW
+    // 投掷动画的基准值：抖动时在基准上偏移，动画结束由 buildBoard 复位
+    this.diceX0 = this.diceX
+    this.diceY0 = this.diceY
+    this.diceW0 = diceW
+    var actW = Math.min(innerW - 2, Math.round(130 * this.uiS))
+    this.actW = actW
+    this.actX = innerX + Math.round((innerW - actW) / 2)
+    this.actY = this.diceY + diceW + 4
+    this.actY2 = this.actY + actH + 4
+    this.actH = actH
+    // 胶囊屏「菜单」兜底按钮：放在操作按钮下方、整条净宽（≥34 触摸目标）。
+    // 部分手环 ROM 不派发侧滑返回手势，没有可见入口就出不了对局；方屏由 CSS 隐藏。
+    this.menuBtnW = innerW
+    this.menuBtnH = menuH
+    this.menuBtnFs = 12 + (this.fontBump || 0)
+    this.menuBtnX = innerX
+    this.menuBtnY = this.actY2 + actH + menuGap
+    this.innerW = innerW
+    this.moneyRows = this.moneyRowsOf()
+    this.round = s.round
+    this.maxRounds = this.mp.MAX_ROUNDS
+    this.ringW = ringW
+    this.ringH = ringH
+    // 供 syncTokens() 复用的几何（避免每拍重算）
+    this.geoCw = cw
+    this.geoCh = ch
+    this.cellPos = pos
+  },
+
+  // 棋子：两枚徽章错开摆放，重叠时也能看清蓝色/红色。逐格前进时给「正在走的那枚」加一跳
+  // （hop 由 animate() 逐拍切换，叠加到该枚尺寸上，落定时归零）。逐格动画每拍只调用这一段。
+  syncTokens() {
+    var cw = this.geoCw
+    var ch = this.geoCh
+    var pos = this.cellPos
+    var s = this.st
+    var tok = Math.max(9, Math.round(cw * 0.62))
+    var hop = this.hop
+    var toks = []
+    for (var p = 0; p < 2; p++) {
+      if (!s.alive[p]) continue
+      var idx = this.dispPos[p]
+      var bp = pos[idx]
+      var side = tok + (p === this.hopPlayer ? hop : 0)
+      toks.push({
+        x: bp[0] + Math.round(cw / 2) - Math.round(side / 2) + (p === 1 ? Math.round(tok * 0.35) : 0),
+        y: bp[1] + Math.round(ch / 2) - Math.round(side / 2) + (p === 1 ? Math.round(tok * 0.35) : -Math.round(tok * 0.35)),
+        d: side,
+        r: Math.round(side / 2),
+        img: themeMod.pawnImage(p)
+      })
+    }
+    this.tokens = toks
+  },
+
+  // 输入：格号、格宽高；输出：房屋/旅馆标记（绿块 1~4，红块＝旅馆）。
+  houseMarks(k, cw, ch) {
+    var h = this.st.houses[k]
+    var out = []
+    var mkH = Math.max(2, Math.round(ch * 0.16))
+    if (h >= 5) {
+      var hw = Math.max(4, Math.round(cw * 0.6))
+      out.push({ left: Math.round((cw - hw) / 2), bottom: mkH, w: hw, h: mkH, color: '#C62828' })
+      return out
+    }
+    var n = Math.max(1, Math.min(4, h))
+    var mw = Math.max(2, Math.round(cw * 0.16))
+    var gap = Math.max(1, Math.round(cw * 0.05))
+    var total = n * mw + (n - 1) * gap
+    var x0 = Math.round((cw - total) / 2)
+    for (var i = 0; i < n; i++) {
+      out.push({ left: x0 + i * (mw + gap), bottom: mkH, w: mw, h: mkH, color: '#2E7D32' })
+    }
+    return out
+  },
+
+  // 金额板两行：蓝方 / 红方（当前行动方用主题强调色）。
+  // 名字与字号都按环内净宽收敛（新盘面净宽约 96px，长名字会两行挤在一起）。
+  moneyRowsOf() {
+    var s = this.st
+    var act = this.st.turn
+    var fs = Math.max(8, Math.min(Math.round(11 * this.uiS) + (this.fontBump || 0), Math.floor(this.innerW / 9)))
+    return [
+      {
+        name: this.mode === 'ai' ? '蓝方·我' : '蓝方·1',
+        money: '¥' + s.money[0],
+        fs: fs,
+        color: act === 0 ? this.t.primary : this.t.onSurfaceVariant
+      },
+      {
+        name: this.mode === 'ai' ? '红方·AI' : '红方·2',
+        money: '¥' + s.money[1],
+        fs: fs,
+        color: act === 1 ? this.t.error : this.t.onSurfaceVariant
+      }
+    ]
+  },
+
+  showDice(a) {
+    this.diceA = String(a)
+    this.diceImgA = themeMod.diceImage(String(a))
+  },
+
+  syncTurn() {
+    var s = this.st
+    var names = this.mp.NAMES
+    // 竞拍进行中：环内状态行改播「拍卖 $最高价」，颜色跟随当前领先者。
+    // 这样拍卖全程不需要任何消息气泡（玩家反馈：竞拍的气泡一闪一闪浪费时间），实时叫价却始终可见。
+    if (s.pending && s.pending.kind === 'auction' && s.auction) {
+      var a = s.auction
+      this.turnText = '拍卖 $' + a.high
+      this.turnColor = a.highBidder < 0 ? this.t.onSurfaceVariant
+        : (a.highBidder === 0 ? this.t.primary : this.t.error)
+      this.moneyRows = this.moneyRowsOf()
+      return
+    }
+    var who = names[s.turn] || ''
+    // 状态行在环内净宽里显示，去掉「轮到」等冗余字，保留「蓝方·你 / 红方·AI」
+    this.turnText = who + (this.mode === 'ai' ? (s.turn === 0 ? '·你' : '·对手') : '')
+    this.turnColor = s.turn === 0 ? this.t.primary : this.t.error
+    this.moneyRows = this.moneyRowsOf()
+  },
+
+  // ── 掷骰与动画 ──────────────────────────────────────────────────
+  tapCell(ci) {
+    if (this.state !== 'playing') return
+    var c = this.cells[ci]
+    if (!c) return
+    this.cellInfo = c
+    this.dlg = 'cell'
+    haptic.place()
+  },
+
+  closeCell() {
+    this.cellInfo = null
+    this.dlg = ''
+  },
+
+  tapDice() {
+    if (this.state !== 'playing' || this.dlg !== '' || this.busy) return
+    if (!this.isHumanTurn()) return
+    var k = this.st.pending ? this.st.pending.kind : ''
+    if (k !== 'roll') return
+    this.dlgWho = this.mp.NAMES[this.st.turn]
+    this.dlg = 'roll'
+  },
+
+  confirmRoll() {
+    this.dlg = ''
+    if (!this.isHumanTurn()) return
+    this.performRoll(this.st.turn)
+  },
+
+  // 掷骰：先播投掷动画（抖 7 拍 → 定格到真实点数），再演出逐格前进，最后交给引擎结算。
+  // 页面先掷出点数（引擎用同一点数复算，保证一致）。
+  performRoll(player) {
+    var dice = this.mp.rollDice(this.randValue())          // 单骰：1~6 的单值
+    this.busy = true
+    haptic.place()
+    var s = this.st
+    var path = []
+    var moves = true
+    if (s.jail[player] > 0) {
+      if (dice !== 6 && s.jail[player] > 1) moves = false      // 监狱中未掷出 6 则不动
+    }
+    if (moves) {
+      for (var i = 1; i <= dice; i++) path.push((s.pos[player] + i) % N)
+    }
+    this.rollAnim(player, dice, path)
+  },
+
+  // 投掷动画：抖动 7 拍（每拍换随机面 + 位置/尺寸微抖）→ 定格真实点数（轻微过冲回正）→ 交回逐格前进。
+  // 只用「已绑定的坐标/尺寸」做抖动（本项目真机验证过的写法），不依赖动态 class 绑定。
+  rollAnim(player, dice, path) {
+    var that = this
+    var i = 0
+    var tick = function () {
+      if (i >= 7) {
+        that.showDice(dice)
+        haptic.place()
+        that.diceW = that.diceW0 + Math.round(that.diceW0 * 0.14)
+        that.diceX = that.diceX0 - Math.round(that.diceW0 * 0.07)
+        that.diceY = that.diceY0 - Math.round(that.diceW0 * 0.07)
+        that.after(110, function () {
+          that.diceW = that.diceW0
+          that.diceX = that.diceX0
+          that.diceY = that.diceY0
+          that.animate(player, path, function () {
+            that.busy = false
+            that.applyAction({ type: 'roll' }, dice)
+          })
+        })
+        return
+      }
+      that.diceImgA = themeMod.diceImage(String(1 + Math.floor(Math.random() * 6)))
+      that.diceW = that.diceW0 + Math.floor(Math.random() * 4) - 1
+      that.diceX = that.diceX0 + Math.floor(Math.random() * 5) - 2
+      that.diceY = that.diceY0 + Math.floor(Math.random() * 5) - 2
+      i++
+      that.after(85, tick)
+    }
+    tick()
+  },
+
+  // 逐格推进棋子（只改显示位置 this.dispPos，不动引擎状态）；隔步给棋子一跳，落点格闪一下。
+  animate(player, path, cb) {
+    var that = this
+    var i = 0
+    var stepFn = function () {
+      if (i >= path.length) {
+        that.hop = 0
+        that.hopPlayer = -1
+        that.flashCell = that.dispPos[player]        // 落定：闪一下落点格
+        that.buildBoard()
+        that.after(240, function () {
+          that.flashCell = -1
+          that.buildBoard()
+        })
+        cb()
+        return
+      }
+      that.dispPos[player] = path[i]
+      that.hopPlayer = player
+      that.hop = (i % 2 === 0) ? 2 : 0               // 隔步跳跃
+      that.syncTokens()                              // 每拍只更棋子，不重建整块盘面
+      i++
+      that.after(STEP_MS, stepFn)
+    }
+    if (!path.length) {
+      that.hop = 0
+      that.hopPlayer = -1
+      cb()
+      return
+    }
+    this.after(STEP_MS, stepFn)
+  },
+
+  // 输入：无；输出：规则层 rand（挑战 = 种子派生的 0~1；普通 = undefined → Math.random）。
+  randValue() {
+    return this.dailyRng ? this.dailyRng.next() : undefined
+  },
+
+  // ── 动作执行（人机共用入口） ────────────────────────────────────
+  applyAction(action, rand) {
+    if (rand === undefined && this.dailyRng) rand = this.dailyRng.next()
+    var hadAuction = !!(this.st && this.st.auction)
+    var res = this.mp.applyAction(this.st, action, rand)
+    this.st = res.state
+    this.dispPos = [this.st.pos[0], this.st.pos[1]]   // 结算后把显示位置对齐引擎（抽卡可能额外移动）
+    this.buildBoard()
+    this.syncTurn()
+    // 机会/命运结果：抓出卡面事件，先用弹窗告知（需求：命运机会结果弹窗）
+    var cardEv = null
+    var sumDelta = 0
+    var sold = false
+    var unsold = false
+    var speak = []
+    for (var i = 0; i < res.events.length; i++) {
+      var e = res.events[i]
+      if (e.kind === 'card') cardEv = e
+      if (e.delta) sumDelta += e.delta
+      // 竞拍不走消息气泡（玩家反馈：气泡一闪一闪浪费时间）——
+      // 拍卖的实时叫价改由环内状态行承担（见 syncTurn），成交结果由盘面归属与资金板体现。
+      if (e.kind === 'auction') {
+        if (e.text.indexOf('拍得') >= 0) sold = true
+        else if (e.text.indexOf('流拍') >= 0) unsold = true
+      } else {
+        speak.push(e)
+      }
+    }
+    toastMod.toastEvents(speak, 2)
+    // 竞拍落槌：成交强震、流拍短震（拍卖全程无气泡，震动是唯一的即时反馈）
+    if (hadAuction && !this.st.auction) {
+      if (sold) haptic.capture()
+      else if (unsold) haptic.place()
+    }
+    var over = this.mp.checkOver(this.st)
+    if (over) { this.endGame(over); return }
+    if (cardEv) {
+      var raw = cardEv.text || ''
+      var idx = raw.indexOf('：')
+      this.cardTitle = idx >= 0 ? raw.slice(0, idx) : raw
+      this.cardText = idx >= 0 ? raw.slice(idx + 1) : ''
+      this.cardDelta = sumDelta
+      this.cardDeltaText = sumDelta === 0 ? '' : (sumDelta > 0 ? '资金 +' + sumDelta : '资金 ' + sumDelta)
+      this.cardColor = this.cardTitle === '机会' ? this.t.primary : this.t.error
+      this.cardDeltaColor = sumDelta > 0 ? this.t.resultWin : (sumDelta < 0 ? this.t.resultLose : this.t.onSurfaceVariant)
+      this.dlg = 'card'
+      return
+    }
+    this.drive()
+  },
+
+  // 决定下一步：弹窗或交棒
+  drive() {
+    var that = this
+    if (this.state !== 'playing') return
+    var k = this.st.pending ? this.st.pending.kind : 'over'
+    this.showEndTurn = false
+    this.showActs = false
+    if (k === 'over') { this.finishByState(); return }
+    if (k === 'buy' || k === 'auction' || k === 'debt') {
+      if (this.isHumanTurn()) { this.openDecision(k); return }
+      // 竞拍不拖时间：AI 出价/放弃的间隔从 600ms 压到 240ms（玩家反馈：竞拍浪费时间）
+      this.after(k === 'auction' ? 240 : 600, function () { that.aiStep() })
+      return
+    }
+    // roll / endTurn
+    if (!this.isHumanTurn()) {
+      this.after(600, function () { that.aiStep() })
+      return
+    }
+    var free = this.freeActions()
+    this.showActs = free.length > 0
+    this.showEndTurn = (k === 'endTurn')
+    // 监狱里且有免狱卡时，按钮文案提示道具可用（否则玩家不会想到点资产面板）
+    var inJail = this.st.jail[this.st.turn] > 0 && this.jailCards > 0
+    this.actLabel = inJail ? '资产 / 免狱' : '资产管理'
+    if (k === 'roll') {
+      toastMod.toast('轮到 ' + this.mp.NAMES[this.st.turn] + '，点骰子投掷', 1600)
+    }
+  },
+
+  // 当前是否轮到「真人」操作（双人模式两边都是真人；人机模式只有蓝方）
+  isHumanTurn() {
+    var k = this.st.pending ? this.st.pending.kind : ''
+    if (k === 'auction' && this.st.auction) return this.mode === 'pvp' || this.st.auction.turn === 0
+    if (k === 'debt' && this.st.debt) return this.mode === 'pvp' || this.st.debt.player === 0
+    return this.mode === 'pvp' || this.st.turn === 0
+  },
+
+  openDecision(k) {
+    if (k === 'buy') {
+      var cell = this.st.pending.cell
+      this.buyName = this.mp.BOARD[cell].name
+      this.buyPrice = this.st.pending.price
+      this.dlg = 'buy'
+      return
+    }
+    if (k === 'auction') {
+      var a = this.st.auction
+      this.buyName = this.mp.BOARD[a.cell].name
+      this.bidHigh = a.high
+      this.bidWho = a.highBidder >= 0 ? this.mp.NAMES[a.highBidder] + ' 领先' : '尚无人出价'
+      this.bidNext = a.high + 10
+      this.dlg = 'auction'
+      return
+    }
+    if (k === 'debt') {
+      this.openSheet('debt')
+      return
+    }
+  },
+
+  doBuy() {
+    this.dlg = ''
+    this.applyAction({ type: 'buy' })
+  },
+
+  doDeclineBuy() {
+    this.dlg = ''
+    this.applyAction({ type: 'declineBuy' })
+  },
+
+  doBid() {
+    var a = this.st.auction
+    this.dlg = ''
+    this.applyAction({ type: 'bid', amount: a.high + 10 })
+  },
+
+  doPassBid() {
+    this.dlg = ''
+    this.applyAction({ type: 'passBid' })
+  },
+
+  doSettleDebt() {
+    this.dlg = ''
+    this.applyAction({ type: 'payDebt' })
+  },
+
+  doBankrupt() {
+    this.dlg = ''
+    this.applyAction({ type: 'declareBankrupt' })
+  },
+
+  doEndTurn() {
+    if (this.dlg !== '') return
+    this.applyAction({ type: 'endTurn' })
+  },
+
+  // ── 资产管理 / 债务清偿（共用一套行列表） ──────────────────────
+  freeActions() {
+    var out = []
+    // 赛季商店免狱卡：在监狱且库存 > 0 时，作为资产管理面板里的一项可用操作
+    if (this.st.jail[this.st.turn] > 0 && this.jailCards > 0 && this.isHumanTurn()) {
+      out.push({ type: 'shopJailCard' })
+    }
+    var acts = this.mp.legalActions(this.st)
+    for (var i = 0; i < acts.length; i++) {
+      var a = acts[i]
+      if (a.type === 'build' || a.type === 'sell' || a.type === 'mortgage' || a.type === 'unmortgage') out.push(a)
+    }
+    return out
+  },
+
+  openActSheet() {
+    if (this.dlg !== '' || !this.isHumanTurn()) return
+    this.openSheet('act')
+  },
+
+  openSheet(kind) {
+    var s = this.st
+    var rows = []
+    var acts = this.freeActions()
+    for (var i = 0; i < acts.length; i++) {
+      var a = acts[i]
+      if (a.type === 'shopJailCard') {
+        rows.push({
+          idx: i,
+          name: '免狱卡出狱',
+          sub: '库存 ' + this.jailCards + ' · 不缴罚金',
+          color: this.t.primary
+        })
+        continue
+      }
+      var c = this.mp.BOARD[a.cell]
+      var label = a.type === 'build' ? '加盖房屋'
+        : a.type === 'sell' ? '拆除房屋'
+        : a.type === 'mortgage' ? '抵押'
+        : '赎回'
+      var sub = a.type === 'build' ? '花费 ' + this.mp.houseCost(a.cell)
+        : a.type === 'sell' ? '退回 ' + Math.floor(this.mp.houseCost(a.cell) / 2)
+        : a.type === 'mortgage' ? '取得 ' + c.mortgage
+        : '支付 ' + this.mp.unmortgageCost(s, a.cell)
+      rows.push({
+        idx: i,
+        name: label + ' · ' + c.name,
+        sub: sub,
+        color: a.type === 'build' ? this.t.resultWin : (a.type === 'sell' || a.type === 'mortgage' ? this.t.resultLose : this.t.primary)
+      })
+    }
+    this.actRows = rows
+    this.actActions = acts
+    this.canSettle = (kind === 'debt' && s.debt && s.money[s.debt.player] >= s.debt.amount)
+    this.debtAmount = kind === 'debt' && s.debt ? s.debt.amount : 0
+    if (kind === 'debt') {
+      var d = s.debt
+      this.sheetTitle = '欠款 ¥' + d.amount
+      this.sheetSub = '付给' + (d.creditor >= 0 ? this.mp.NAMES[d.creditor] : '银行') + '。可卖房或抵押筹钱。'
+    } else {
+      this.sheetTitle = '资产管理'
+      this.sheetSub = rows.length ? '点行执行（同组须均匀建房）' : '当前没有可执行的操作'
+    }
+    this.dlg = (kind === 'debt') ? 'debt' : 'act'
+  },
+
+  doActRow(i) {
+    var a = this.actActions && this.actActions[i]
+    if (!a) return
+    if (a.type === 'shopJailCard') { this.useJailCardItem(); return }
+    // 债务弹窗里执行动作后保持弹窗（继续筹钱），普通面板同理
+    var res = this.mp.applyAction(this.st, a)
+    this.st = res.state
+    this.buildBoard()
+    this.syncTurn()
+    toastMod.toastEvents(res.events, 1)
+    var k = this.st.pending ? this.st.pending.kind : ''
+    if (k === 'debt') { this.openSheet('debt'); return }
+    if (k === 'endTurn' || k === 'roll') { this.openSheet('act'); return }
+    this.openDecision(k)
+  },
+
+  // 使用赛季商店的免狱卡：先扣库存（落盘），再让规则层清监禁；本回合仍需玩家自己掷骰
+  useJailCardItem() {
+    if (!this.st || this.st.jail[this.st.turn] <= 0 || this.jailCards <= 0) return
+    var that = this
+    economy.useItem('jailCard').then(function (r) {
+      if (!r.ok) { toastMod.toast('免狱卡库存不足'); return }
+      that.jailCards = r.items.jailCard
+      var res = that.mp.applyAction(that.st, { type: 'shopJailCard' })
+      that.st = res.state
+      that.dlg = ''
+      that.buildBoard()
+      that.syncTurn()
+      toastMod.toastEvents(res.events, 1)
+      that.drive()
+    })
+  },
+
+  closeDlg() {
+    this.dlg = ''
+    this.drive()
+  },
+
+  noop() {},
+
+  // 点蒙层：只有终局/离开确认可点空白关闭
+  onMaskTap() {
+    if (this.dlg === 'exit' || this.dlg === 'over') this.closeDlg()
+  },
+
+  // ── AI ─────────────────────────────────────────────────────────
+  aiStep() {
+    if (this.state !== 'playing') return
+    if (this.mode === 'pvp') return
+    if (this.isHumanTurn()) { this.drive(); return }
+    var k = this.st.pending ? this.st.pending.kind : 'over'
+    var act = this.mp.aiAction(this.st, this.randValue())
+    if (!act || k === 'over') { this.drive(); return }
+    if (act.type === 'roll') {
+      this.performRoll(this.st.turn)
+      return
+    }
+    this.applyAction(act)
+  },
+
+  // ── 抽屉 / 缩放 / 退出 ──────────────────────────────────────────
+  closeMenu() { this.showMenu = false },
+  menuZoom(dir) { if (dir > 0) this.zoomIn(); else this.zoomOut() },
+  menuRestart() {
+    this.closeMenu()
+    this.newRound()
+  },
+  menuExit() { this.closeMenu(); this.dlg = 'exit' },
+
+  zoomIn() {
+    if (this.zoomIdx >= this.zoomSteps.length - 1) return
+    this.zoomIdx++
+    this.buildBoard()
+    this.centerScene()
+  },
+
+  zoomOut() {
+    if (this.zoomIdx <= 0) return
+    this.zoomIdx--
+    this.buildBoard()
+    this.centerScene()
+  },
+
+  centerScene() {
+    try {
+      this.$element('scene').scrollTo({
+        left: Math.max(0, Math.round((this.stageW - 192) / 2)),
+        top: Math.max(0, Math.round((this.stageH - this.pageH) / 2)),
+        behavior: 'smooth'
+      })
+    } catch (e) {}
+  },
+
+  // ── 终局与离开 ──────────────────────────────────────────────────
+  finishByState() {
+    var over = this.mp.checkOver(this.st)
+    if (over) this.endGame(over)
+  },
+
+  endGame(over) {
+    this.clearTimers()
+    this.state = 'over'
+    var res = over.result
+    this.resultText = res === 'win' ? '你赢了' : res === 'lose' ? '你输了' : '和局'
+    if (this.mode === 'pvp') this.resultText = res === 'win' ? '蓝方获胜' : res === 'lose' ? '红方获胜' : '和局'
+    this.resultReason = over.reason + '（蓝 ¥' + this.st.money[0] + ' · 红 ¥' + this.st.money[1] + '）' +
+      ' · 棋币 +' + economy.coinFor(res, this.mode)
+    this.resultColor = res === 'win' ? this.t.resultWin : res === 'lose' ? this.t.resultLose : this.t.resultDraw
+    if (res === 'win') haptic.celebrate()
+    else haptic.result()
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_monopoly')
+      this.savedSnap = null
+      this.hasSave = false
+    }
+    var that = this
+    if (this.isCampaign) {
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: res === 'win', moves: this.st.round }).then(function (info) {
+        if (info && info.text) that.resultReason = that.resultReason + ' · ' + info.text
+      })
+    }
+    config.recordResult('monopoly', res, this.mode).then(function (list) {
+      var st = config.streakOf(list || [])
+      if (res === 'win' && st.cur >= 2) that.resultText = that.resultText + ' · ' + st.cur + ' 连胜'
+    })
+    if (this.isChallenge && res === 'win') economy.completeDaily('monopoly')
+    this.dlg = 'over'
+  },
+
+  playAgain() {
+    this.dlg = ''
+    this.newRound()
+  },
+
+  exit() {
+    if (this.state !== 'playing') {
+      this.clearTimers()
+      router.back()
+      return
+    }
+    this.dlg = 'exit'
+  },
+
+  leaveHome(save) {
+    this.dlg = ''
+    this.showMenu = false
+    this.clearTimers()
+    if (save) this.saveSnapshot()
+    else config.clearPref('save_monopoly')
+    router.back()
+  },
+
+  // 落存档快照：回到主页后可「继续上局」恢复。做法与棋类页保持一致（快照带版本号）。
+  saveSnapshot() {
+    if (!this.st) return
+    config.saveSetting('save_monopoly', {
+      v: SAVE_V,
+      st: this.st,
+      mode: this.mode,
+      difficulty: this.difficulty || 'normal'
+    })
+  }
+}
+</script>

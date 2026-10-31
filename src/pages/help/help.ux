@@ -1,0 +1,147 @@
+<!--
+  pages/help — 玩法介绍。
+  职责：全部棋种规则简介 + 通用操作/匹配/执子说明。内容数据驱动自
+  config.GAME_TYPES 的 intro 字段（新增棋种只改 config）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">玩法介绍</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" scroll-y="true">
+      <!-- 按「棋类 / 派对 / 拼图 / 推理」分组，每款玩法补「操作 / 技巧」两行；
+           19 款内容全部来自 config.GAME_TYPES 的 intro / how / tip，不在页面里硬编码。 -->
+      <div class="h-group" for="{{(gi, g) in groups}}">
+        <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{g.name}}</text>
+        <div class="h-row" for="{{(hi, h) in g.rows}}"
+             style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+          <text class="h-name" style="color:{{t.primary}}">{{h.name}}</text>
+          <text class="h-text" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{h.intro}}</text>
+          <text class="h-meta" style="color:{{t.onSurfaceVariant}}">操作 · {{h.how}}</text>
+          <text class="h-meta" style="color:{{t.onSurfaceVariant}}">技巧 · {{h.tip}}</text>
+        </div>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">通用操作</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">棋盘默认整盘可见，四周留白；放大档位可拖到任意位置查看局部。棋盘类点击交叉点/格子落子，点得太偏或非法位置会震动提示。对局中侧滑返回会先呼出控制抽屉（悔棋 / 停手 / 重开 / 退出 / 缩放），抽屉里的「退出对局」再弹确认，避免误触退出。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">对战模式</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">开局面板可选「人机对战」或「双人对战」。人机对手强度默认按你最近的战绩自动匹配（赢多了升档、输多了降档），也可在设置页「对手强度」里锁定简单 / 普通 / 困难；闯关、每日挑战与残局的难度由关卡固定，不受该设置影响。双人为同机轮流：棋类每局随机分配黑白（开局面板与回合胶囊会标明），大富翁 / 飞行棋固定蓝方先手。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">每日挑战</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">赛季页的「每日挑战」按本地日期在 19 款玩法间轮换，同一天重新进入时玩法、局面/关卡/题号与 AI 决策完全一致。当天首次完成发 40 棋币并累计连续挑战天数；失败可无限重试，未完成前不发奖，同一天不重复发币，跨日自动切换。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">闯关模式</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">共 8 章 80 关，覆盖全部 19 款玩法（每款至少 4 关）。每关有独立目标与 1~3 星门槛（通关即 1 星，按手数 / 步数 / 用时 / 得分追 2~3 星）；首次拿到至少 1 星发放首通棋币，并解锁下一关。总星数 240，主页与赛季页可查看进度。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">终身成就</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">共 48 项，分对局 / 棋种 / 赛季 / 收集 / 每日 / 残局 / 闯关七类。达标即自动解锁并发放棋币，每项只发一次；成就进度与解锁状态终身保留，换季只重置赛季任务。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">皮肤与收集</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">赛季商店提供棋盘底材 3 套、骰子皮肤 3 套、棋子样式 2 套、整页底色 2 档（素色 / 层次）：购买后扣棋币并可随时装备，重进应用仍保持；重复购买不扣费。素材缺失时自动回退默认样式，不影响对局。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">残局</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">象棋 / 五子棋 / 围棋各 10 题，共 30 题。每题有目标与步数上限，防守方由 AI 最优应对；卡住可用「提示」看下一手（不代落子），走错或超步可一键重试。首次完成奖励 60 棋币，并记录最佳步数。</text>
+      </div>
+
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">大富翁 · 飞行棋</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">大富翁为 24 格盘面（12 块地产 / 4 条铁路 / 2 家公用事业 / 6 个特殊格），单颗骰子轮流投掷：掷出 6 才可出狱，连续三次未掷出 6 则缴罚金后行动；放弃购买进入拍卖，竞拍不弹气泡、在环内状态行显示当前最高价。飞行棋为 28 格外圈 + 每方 4 架飞机。两者默认档位只显示简称与颜色，放大后显示完整名称；掷骰前弹窗确认，机会/命运卡面用弹窗告知，其余播报走系统提示（Toast）。</text>
+      </div>
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">规则简化说明</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">为适配手表小屏，个别棋种做了简化：围棋用简单劫（提子后不能立刻回提同一劫），不做让子，白贴 6.5 目；黑白棋提供 6×6 与 8×8 两档；大富翁为 24 格精简盘面（标准 40 格），单骰，掷出 6 才可出狱，连续三次未掷出 6 缴 $50 后行动；飞行棋外圈 28 格，单骰，撞机连投。国际象棋与官方规则一致（含王车易位、吃过路兵、可选升变、三次重复局面判和）。</text>
+      </div>
+      <text class="sec" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">赛季与棋币</text>
+      <div class="h-row" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="h-text" style="color:{{t.onSurface}};font-size:{{fz.md}}px">主页顶部金币条可进赛季页。人机 / 双人对局结束按结果获得棋币；每赛季有 5 条任务，完成后手动领取。棋币可在商店买免狱卡（大富翁出狱）与重掷券（飞行棋重掷一次），也可在设置里解锁琥珀 / 绯红配色。赛季随版本更新切换，换季只重置任务，棋币、道具与已解锁配色永久保留。</text>
+      </div>
+    </scroll>
+
+  </div>
+</template>
+
+<style>
+@import './help.css';
+@import '../../common/ui.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    fz: config.fontTokens('normal'),
+    groups: []
+  },
+  onShow() {
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：主题没变就不重设配色绑定
+    })
+    var games = config.GAME_TYPES
+    var cats = [
+      { id: 'board', name: '棋类对弈' },
+      { id: 'party', name: '桌面派对' },
+      { id: 'puzzle', name: '益智拼图' },
+      { id: 'solo', name: '探索推理' }
+    ]
+    var groups = []
+    var used = 0
+    for (var c = 0; c < cats.length; c++) {
+      var rows = []
+      for (var i = 0; i < games.length; i++) {
+        if (!games[i].enabled || games[i].cat !== cats[c].id) continue
+        used++
+        rows.push({
+          name: games[i].name,
+          intro: games[i].intro,
+          how: games[i].how,
+          tip: games[i].tip
+        })
+      }
+      if (rows.length) groups.push({ id: cats[c].id, name: cats[c].name, rows: rows })
+    }
+    if (used < games.length) {
+      var rest = []
+      for (var j = 0; j < games.length; j++) {
+        if (!games[j].enabled) continue
+        var known = false
+        for (var k = 0; k < cats.length; k++) if (games[j].cat === cats[k].id) known = true
+        if (!known) rest.push({ name: games[j].name, intro: games[j].intro, how: games[j].how, tip: games[j].tip })
+      }
+      if (rest.length) groups.push({ id: 'other', name: '更多玩法', rows: rest })
+    }
+    this.groups = groups
+  },
+  goBack() {
+    router.back()
+  }
+}
+</script>

@@ -1,0 +1,1188 @@
+<!--
+  pages/aeroplane — 飞行棋对局页（标准 52 格外圈 + 每方 6 格冲刺道，各 4 架飞机）。
+  职责：标准航道渲染（四色色区 / 起飞点 / 航线格 / 冲刺道 / 4 架飞机徽章 / 金额板 / 骰子）
+        + 开局设置（人机 / 双人热座）+ 规则交互（掷骰确认 → 起飞 / 逐格前进 / 撞机 / 选择行动）。
+  规则逻辑全部在 rules/aeroplane.js；页面只驱动动作、演出动画、弹窗、播报。
+  界面约定（本轮玩家决策）：
+    · 金额显示在环内中间区域、骰子正上方；冲刺道用小格排在金额板下方。
+    · 不需要确定/取消的播报走系统 Toast；需要决定或看结果的一律页内弹窗，同一时刻只弹一个。
+    · 棋盘四周留 PAD=10 设计像素空白；默认档整盘可见（拖不动），放大档可拖到任意位置。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+
+    <!-- 开局设置面板（idle）。
+         ⚠️ 面板内容在方屏（画布高 300 / 228）上高于屏高 → 放进 scroll（与 game 页同一处理）。 -->
+
+    <!-- 开始页（仅方屏）：左上返回，右侧标题；对局中不渲染，游戏界面仍用抽屉 -->
+    <div class="setup-nav" if="{{rectScreen && state === 'idle'}}">
+      <input type="button" class="setup-nav-back" value="＜"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="exit" />
+      <text class="setup-nav-title" style="color:{{t.onSurface}}">飞行棋</text>
+    </div>
+
+    <scroll class="panel-vp" if="{{state === 'idle'}}" scroll-y="true" bounces="true">
+      <div class="setup">
+        <text class="s-title" style="color:{{t.onSurface}}">飞行棋</text>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">对战模式</text>
+        <div class="chips chips-mode">
+          <div class="chip chip-mode" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{m.n}}</text>
+          </div>
+        </div>
+        <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{modeHint}}</text>
+        <input type="button" class="s-start" value="继续上局" if="{{hasSave}}"
+               style="color:{{t.onSurface}};background-color:{{t.surface}};border-color:{{t.primaryContainer}}"
+               @click="continueGame" />
+        <input type="button" class="s-start" value="开始对局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="startMatch" />
+        <div class="s-secondary">
+        <input type="button" class="s-back s-half s-intro" value="玩法介绍"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="s-back s-half s-return" value="返 回"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+               @click="exit" />
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 匹配加载页（仅人机） -->
+    <div class="matching" if="{{state === 'matching'}}">
+      <text class="s-title" style="color:{{t.onSurface}}">飞行棋</text>
+      <text class="s-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">人机对战</text>
+      <div class="m-dots">
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 0.2 : 1}};background-color:{{t.primary}}"></div>
+        <div class="m-dot" style="opacity:{{breathOn ? 1 : 0.2}};background-color:{{t.primary}}"></div>
+      </div>
+      <text class="m-status" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">{{matchDone ? '匹配成功' : '正在匹配对手…'}}</text>
+      <text class="m-status" if="{{matchDone}}" style="color:{{t.primary}};font-size:{{fz.md}}px">对手强度 · {{matchLabel}}</text>
+      <input type="button" class="s-back" value="取 消"
+             style="color:{{t.onSurfaceVariant}};background-color:{{t.surface}};border-color:{{t.outline}}"
+             @click="cancelMatch" />
+    </div>
+
+    <!-- 对局 -->
+    <block if="{{state === 'playing'}}">
+      <scroll class="board" id="scene" scroll-x="true" scroll-y="true" bounces="false">
+        <div class="stage" style="width:{{stageW}}px;height:{{stageH}}px">
+          <div class="ring" style="margin-left:{{ringX}}px;margin-top:{{ringY}}px;width:{{ringW}}px;height:{{ringH}}px">
+            <!-- 52 格外圈：色区底色（盘面固定色）＋ 起飞/航线/入口 字形 -->
+            <div class="cell" for="{{cells}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{$item.bg}};border-color:{{$item.border}}">
+              <text class="cell-glyph" if="{{$item.glyph}}" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.glyph}}</text>
+            </div>
+            <!-- 冲刺道：每方 6 格小格 -->
+            <div class="home-cell" for="{{homeCells}}"
+                 style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.w}}px;height:{{$item.h}}px;background-color:{{$item.bg}};border-color:{{$item.border}}"></div>
+            <!-- 飞机徽章（蓝＝蓝方 / 红＝红方）：环上 / 冲刺道 / 到家 都算好坐标 -->
+            <image class="token" for="{{tokens}}"
+                   style="left:{{$item.x}}px;top:{{$item.y}}px;width:{{$item.d}}px;height:{{$item.d}}px;border-radius:{{$item.r}}px;opacity:{{$item.op}}"
+                   src="{{$item.img}}"></image>
+            <!-- 环内状态行（回合 + 轮到谁）：放在金额板正上方，随棋盘一起滚动 -->
+            <text class="ring-status" style="left:{{ringStatusX}}px;top:{{statusY}}px;width:{{ringStatusW}}px;height:{{statusH}}px;color:{{turnColor}};font-size:{{statusFs}}px;line-height:{{statusH}}px">{{round}}/{{maxRounds}} · {{turnText}}</text>
+            <!-- 环内：金额板（骰子正上方） -->
+            <div class="money-plate" style="left:{{moneyX}}px;top:{{moneyY}}px;width:{{moneyW}}px;height:{{moneyH}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+              <div class="mp-row" for="{{moneyRows}}">
+                <text class="mp-name" style="color:{{$item.color}};font-size:{{$item.fs}}px">{{$item.name}}</text>
+                <text class="mp-money" style="color:{{$item.color}};font-size:{{$item.fs}}px">{{$item.money}}</text>
+              </div>
+            </div>
+            <!-- 正中骰子（标准飞行棋用单颗骰子）：位图 + 其上透明热区 -->
+            <image class="dice-disc" style="left:{{diceX}}px;top:{{diceY}}px;width:{{diceW}}px;height:{{diceW}}px;border-radius:{{diceR}}px" src="{{diceImgA}}"></image>
+            <div class="dice-hit" style="left:{{diceX}}px;top:{{diceY}}px;width:{{diceW}}px;height:{{diceW}}px" @click="tapDice"></div>
+            <!-- 胶囊屏「菜单」兜底出口：部分手环 ROM 不派发侧滑返回手势 → 环内常显一个「菜单」按钮，
+                 点开控制抽屉（抽屉里才有「退出对局」）。位置在骰子左侧的环内空档，不压任何格子；
+                 方屏隐藏（有返回键/手势），见 aeroplane.css 的 rect 媒体查询。 -->
+            <input type="button" class="menu-fab" value="菜单"
+                   style="left:{{menuBtnX}}px;top:{{menuBtnY}}px;width:{{menuBtnW}}px;height:{{menuBtnH}}px;font-size:{{menuBtnFs}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                   @click="openMenu" />
+          </div>
+        </div>
+      </scroll>
+    </block>
+
+    <!-- 通用弹窗（同一时刻只弹一个） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMaskTap">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <!-- 掷骰确认（双人模式下兼作交接确认） -->
+        <block if="{{dlg === 'roll'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">投骰子</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">轮到 {{dlgWho}}。掷出 6 可起飞。</text>
+          <input type="button" class="m-btn" value="投骰子"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="confirmRoll" />
+          <input type="button" class="m-btn" value="取消"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="closeDlg" />
+        </block>
+
+        <!-- 重掷券：掷出点数后、起飞/前进前询问一次（库存为 0 时不弹） -->
+        <block if="{{dlg === 'reroll'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">点数为 {{rerollDice}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">使用重掷券重掷一次？（剩 {{rerolls}} 张）</text>
+          <input type="button" class="m-btn" value="继续前进"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="confirmMove" />
+          <input type="button" class="m-btn" value="重 掷"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="doReroll" />
+        </block>
+
+        <!-- 多机可动：选择行动 -->
+        <block if="{{dlg === 'choose'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">选择行动</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">有多架飞机可以移动</text>
+          <scroll class="m-list" scroll-y="true">
+            <div class="row-act" for="{{(ci, c) in choices}}"
+                 style="background-color:{{t.surfaceContainer}};border-color:{{t.outline}}"
+                 @click="doChoose(ci)">
+              <text class="row-act-name" style="color:{{t.primary}}">{{c.label}}</text>
+              <text class="row-act-sub" style="color:{{t.onSurfaceVariant}}">{{c.sub}}</text>
+            </div>
+          </scroll>
+        </block>
+
+        <!-- 离开对局确认 -->
+        <block if="{{dlg === 'exit'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">离开对局？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">回到主页可稍后「继续上局」</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+          <input type="button" class="m-btn" value="回到主页"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(true)" />
+          <input type="button" class="m-btn" value="狠心离开"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveHome(false)" />
+        </block>
+
+        <!-- 终局 -->
+        <block if="{{dlg === 'over'}}">
+          <text class="modal-title" style="color:{{resultColor}}">{{resultText}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{resultReason}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="playAgain" />
+          <input type="button" class="m-btn" value="返回主页"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="exit" />
+        </block>
+      </div>
+    </div>
+
+    <!-- 抽屉面板：缩放 / 重开 / 退出 -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <!-- 条目容器：胶囊屏单列；方屏画布矮 → rect 档改双列网格（每格 86×36 ≥34） -->
+        <div class="d-grid">
+          <input type="button" value="放大棋盘" class="d-item" disabled="{{zoomIdx >= 3}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(1)" />
+          <input type="button" value="缩小棋盘" class="d-item" disabled="{{zoomIdx <= 0}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(-1)" />
+          <input type="button" value="重开新局" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuRestart" />
+          <input type="button" value="退出对局" class="d-item"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}" @click="menuExit" />
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './aeroplane.css';
+</style>
+
+<script>
+/**
+ * 飞行棋页脚本。
+ * state：idle(开局设置) → matching(人机匹配) → playing(对局) → over(终局弹窗)。
+ * 回合由页面驱动（引擎无 pending 概念）：掷骰 → 无可动即交棒 / 单一动作直走 /
+ * 多机可动弹「选择行动」。连投（掷 6 或撞机）由引擎返回的 extra 判定。
+ * 双人热座：两名玩家在本机轮流操作，掷骰确认弹窗兼作交接确认。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var toastMod = global.YQ.toast
+var economy = global.YQ.economy
+var apFactory = require('../../rules/aeroplane.js')
+var rng = global.YQ.rng
+
+var N = 28             // 外圈格数（上下 a 格 + 左右 b 格：2a+2b−4 = 28）
+var PAD = 2            // 环体到屏幕边缘的留白（玩家要求「占满整个屏幕」，故只留 2px）
+var GAP = 3            // 格与格之间的最小缝（其余缝隙按屏幕纵横比均摊，见 baseRing）
+var SLACK = 26         // 可拖动余量：盘面外再留一圈，好把被屏幕圆角切掉的四个角拖出来
+var EDGE = 4
+var HOME_N = 6         // 冲刺道格数
+var SAVE_V = 2
+var STEP_MS = 80
+
+// 四色色区（盘面固定色：蓝 / 红 / 绿 / 黄，双人对局只用前两区）
+var ZONE_BG = ['#2E6FD8', '#D8453E', '#2F8F5B', '#C99A2E']
+var ZONE_FG = ['#FFFFFF', '#FFFFFF', '#FFFFFF', '#1D1B20']
+var MUTED = '#2E2C33'
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    rectScreen: false,
+    fz: config.fontTokens('normal'),
+    boardH: 300,
+    uiS: 1,
+    fontSizeName: 'normal',
+    isPill: true,
+    state: 'idle',
+    mode: 'ai',
+    modes: [],
+    modeHint: '你是蓝方，对手是红方。',
+    hasSave: false,
+    matchDone: false,
+    matchLabel: '',
+    breathOn: true,
+    zoomIdx: 1,
+    // 缩放档：0.7 看全局 → 1 默认（格 20px，盘面已大于视口）→ 1.3/1.7 看细节
+    zoomSteps: [0.7, 1, 1.3, 1.7],
+    ringW: 176,
+    ringH: 300,
+    ringX: 8,
+    ringY: 10,
+    stageW: 192,
+    stageH: 300,
+    cells: [],
+    homeCells: [],
+    tokens: [],
+    moneyRows: [],
+    moneyX: 20,
+    moneyY: 100,
+    moneyW: 120,
+    moneyH: 38,
+    diceX: 70,
+    diceY: 200,
+    diceW: 36,
+    diceR: 6,
+    diceA: '0',
+    diceImgA: themeMod.diceImage('0'),
+    diceSkinKey: themeMod.skinKey(),   // 骰子皮肤签名：从商店换装回来时据此刷新骰面
+    diceX0: 60,
+    diceY0: 150,
+    diceW0: 28,
+    // 胶囊屏「菜单」兜底按钮（首帧占位，layoutBoard 每次重算）
+    menuBtnX: 20,
+    menuBtnY: 155,
+    menuBtnW: 34,
+    menuBtnH: 22,
+    menuBtnFs: 11,
+    hop: 0,              // 逐格前进时该机的尺寸加成（跳跃手感）
+    hopPlayer: -1,
+    hopPlane: -1,
+    flashCell: -1,       // 落点格高亮（落定后闪一下）
+    geoCw: 20,           // layoutBoard 缓存下来的几何（syncTokens 复用，避免动画每拍重算）
+    ringBaseKey: 0,      // baseRing 缓存键（pageH）
+    ringBase: null,      // baseRing 结果 {a,b,cw,gh,gv}
+    innerW: 106,         // 左右两列格子之间的净宽（环内 UI 的宽度上限）
+    geoCh: 20,
+    cellPos: [],
+    rowX: 0,
+    rowW: 120,
+    turnText: '',
+    turnColor: '',
+    statusY: 60,
+    statusH: 20,
+    statusFs: 13,
+    ringStatusX: 4,
+    ringStatusW: 260,
+    round: 1,
+    maxRounds: 30,
+    dlg: '',
+    dlgWho: '',
+    choices: [],
+    pendingMoves: null,
+    rerolls: 0,            // 赛季商店买的重掷券库存
+    usedReroll: false,     // 本次投掷是否已用过重掷券（每次掷骰前复位）
+    rerollDice: 0,         // 待确认的点数（重掷弹窗显示）
+    pendingDice: 0,        // 已掷出的点数（点「继续前进」后按它结算）
+    pendingPlayer: 0,      // 待结算的玩家（双人模式下可能是 1 号）
+    resultText: '',
+    resultReason: '',
+    resultColor: '',
+    showMenu: false
+  },
+
+  onInit() {
+    // 首帧先铺默认模式选项，异步设置回来后再校正
+    this.syncSetupUI()
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    // 每日挑战：种子驱动骰子/AI 决策；普通局不创建 RNG（randValue 返回 undefined）
+    this.isChallenge = Number(this.challenge) === 1
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'aeroplane')
+      this.dailyRng = rng.create(seedNum)
+    }
+    // 闯关模式：强制人机 + 关卡难度，跳过匹配与开局面板
+    this.isCampaign = !this.isChallenge && !!this.campaignId
+    this.campaignDiffName = this.campaignDiff === 'easy' || this.campaignDiff === 'hard'
+      ? this.campaignDiff : 'normal'
+    this.ap = apFactory.create('normal')
+    this.st = this.ap.newGame()
+    this.turn = 0
+    // 显示用飞机位置：逐格动画只改它，不改 this.st.planes
+    this.disp = [[-1, -1, -1, -1], [-1, -1, -1, -1]]
+    this.timers = []
+    this.savedSnap = null
+    this.busy = false
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('mode', 'ai'),
+      config.getPref('save_aeroplane', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.rectScreen = l.profile === 'rect'
+      that.boardH = Math.max(200, l.designH)
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.syncFonts()
+      that.mode = (that.isChallenge || that.isCampaign) ? 'ai' : (vals[1] === 'pvp' ? 'pvp' : 'ai')
+      that.syncModeHint()
+      that.syncSetupUI()
+      // 挑战/闯关模式：固定难度、直接开局（跳过匹配页），不读普通存档
+      if (that.isChallenge || that.isCampaign) {
+        that.difficulty = that.isCampaign ? that.campaignDiffName : 'normal'
+        that.newRound()
+        return
+      }
+      var snap = vals[2]
+      if (snap && snap.v === SAVE_V && snap.st) {
+        that.savedSnap = snap
+        that.hasSave = true
+      }
+      that.buildBoard()
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：没换主题/字号就不重设配色绑定（重绑整页 = 闪）
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      that.buildBoard()
+    })
+  },
+
+  syncFonts() {
+    var b = config.fontTokens(this.fontSizeName, this.fontBump || 0)
+    var s = this.uiS
+    this.fz = { md: Math.max(9, Math.round(b.md * s)), sm: Math.max(8, Math.round(b.sm * s)) }
+  },
+
+  syncModeHint() {
+    this.modeHint = this.mode === 'pvp'
+      ? '双人同机轮流：1 号＝蓝方，2 号＝红方。'
+      : '你是蓝方，对手是红方（强度按战绩匹配）。'
+  },
+
+  syncSetupUI() {
+    var modes = []
+    for (var i = 0; i < config.MODES.length; i++) {
+      modes.push({ v: config.MODES[i].v, n: config.MODES[i].n, sel: config.MODES[i].v === this.mode })
+    }
+    this.modes = modes
+  },
+
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m || this.mode === m.v) return
+    this.mode = m.v
+    this.syncModeHint()
+    this.syncSetupUI()
+  },
+
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  startMatch() {
+    this.dlg = ''
+    config.saveSetting('mode', this.mode)
+    var that = this
+    if (this.mode === 'pvp') { this.newRound(); return }
+    this.state = 'matching'
+    this.matchDone = false
+    this.matchLabel = ''
+    this.startBreath()
+    config.matchDifficulty('aeroplane').then(function (d) { that.difficulty = d })
+    this.after(900 + Math.floor(Math.random() * 500), function () {
+      that.matchDone = true
+      that.matchLabel = that.difficulty === 'easy' ? '简单' : that.difficulty === 'hard' ? '困难' : '普通'
+      haptic.place()
+      that.after(800, function () { that.newRound() })
+    })
+  },
+
+  newRound() {
+    var that = this
+    // 挑战/闯关模式不清普通对局存档（普通进度保留）
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_aeroplane')
+      this.savedSnap = null
+      this.hasSave = false
+    }
+    this.ap = apFactory.create(this.difficulty || 'normal')
+    this.st = this.ap.newGame()
+    this.turn = 0
+    this.disp = [[-1, -1, -1, -1], [-1, -1, -1, -1]]
+    this.state = 'playing'
+    this.zoomIdx = 1
+    this.dlg = ''
+    this.showDice(0)
+    this.buildBoard()
+    this.syncTurn()
+    // 盘面大于视口：进入对局先把摄像机对准盘面中心（状态行/金额板/骰子都在正中）
+    this.after(80, function () { that.centerScene() })
+    toastMod.toast('对局开始 · 蓝方先手')
+    this.drive()
+  },
+
+  cancelMatch() {
+    this.clearTimers()
+    this.state = 'idle'
+  },
+
+  continueGame() {
+    var that = this
+    var snap = this.savedSnap
+    if (!snap || !snap.st) { this.newRound(); return }
+    this.difficulty = snap.difficulty || 'normal'
+    this.ap = apFactory.create(this.difficulty)
+    this.st = snap.st
+    this.turn = snap.turn === 1 ? 1 : 0
+    this.disp = snap.disp ? [[].concat(snap.disp[0]), [].concat(snap.disp[1])] : [[-1, -1, -1, -1], [-1, -1, -1, -1]]
+    this.mode = snap.mode === 'pvp' ? 'pvp' : 'ai'
+    this.syncModeHint()
+    this.state = 'playing'
+    this.buildBoard()
+    this.syncTurn()
+    // 盘面大于视口：进入对局先把摄像机对准盘面中心
+    this.after(80, function () { that.centerScene() })
+    toastMod.toast('已恢复上局')
+    this.drive()
+  },
+
+  onShow() {
+    screen.keepScreenOn(true)
+    // 读赛季道具库存（重掷券）；在赛季商店买完回来即刻生效
+    var that = this
+    economy.load().then(function (st) { that.rerolls = st.items.reroll })
+    // 设置/皮肤可能在商店或设置页改过：回到本页同步一次（applyTheme 判重，没变不重绑）
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)
+      that.fontSizeName = s.fontSize
+      that.syncFonts()
+      haptic.applySettings(s)
+      var key = themeMod.skinKey()
+      if (that.diceSkinKey !== key) {
+        that.diceSkinKey = key
+        that.diceImgA = themeMod.diceImage(that.diceA)   // 当前骰面 → 新皮肤，不跳回初始面
+      }
+    })
+  },
+  onHide() { screen.keepScreenOn(false) },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimers()
+    this.timers = null
+  },
+
+  onBackPress() {
+    if (this.state !== 'playing') return false
+    if (this.dlg !== '') return false
+    this.openMenu()
+    return true
+  },
+
+  // 环内「菜单」按钮（仅非方屏显示）：与侧滑返回同一条路径 —— 部分手环 ROM 不派发返回手势，
+  // 这是那些机型唯一的出口（抽屉里才有「退出对局」）。弹窗开着时不叠加抽屉。
+  openMenu() {
+    if (this.dlg !== '') return
+    this.showMenu = true
+  },
+
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  startBreath() {
+    var that = this
+    this.after(500, function tick() {
+      if (that.state !== 'matching') return
+      that.breathOn = !that.breathOn
+      that.after(500, tick)
+    })
+  },
+
+  // ── 渲染同步 ────────────────────────────────────────────────────
+  // 28 格：上 8（含两角）→ 右 6 → 下 8 → 左 6；环体贴满屏幕 + 四周可拖余量。
+  // 拆成两段以省渲染开销（性能）：**布局 + 静态格 + 冲刺道 + 环内竖排**只在缩放/状态变化时重建；
+  // **飞机徽章**在逐格动画的每一拍只重建这一段（原实现每拍全量重建整块盘面）。
+  buildBoard() {
+    this.layoutBoard()
+    this.syncTokens()
+  },
+
+  // 基础环几何（z=1）：正方形格 + 缝隙尽量均匀 + 盘面贴满屏幕。
+  // 28 格 => 上下 a 格（含两角）+ 左右 b 格：2a+2b−4 = 28（a+b=16）。
+  // 枚举 a，按「最大缝最小」选方案；结果按 pageH 缓存（缩放只等比放大，不重排格数）。
+  baseRing() {
+    var key = this.pageH
+    if (this.ringBaseKey === key && this.ringBase) return this.ringBase
+    var usableW = 192 - 2 * PAD - 2 * EDGE
+    var usableH = this.pageH - 2 * PAD - 2 * EDGE
+    var half = N / 2 + 2
+    var best = null
+    for (var a = 3; a <= half - 3; a++) {
+      var b = half - a
+      if (b < 3) continue
+      var cw = Math.floor(Math.min((usableW - (a - 1) * GAP) / a, (usableH - (b - 1) * GAP) / b))
+      if (cw < 9) continue
+      var gh = (usableW - a * cw) / (a - 1)
+      var gv = (usableH - b * cw) / (b - 1)
+      var worst = gh > gv ? gh : gv
+      if (!best || worst < best.worst - 0.01 ||
+          (Math.abs(worst - best.worst) <= 0.01 && cw > best.cw)) {
+        best = { a: a, b: b, cw: cw, gh: gh, gv: gv, worst: worst }
+      }
+    }
+    if (!best) best = { a: 5, b: 11, cw: 18, gh: GAP, gv: GAP, worst: 99 }
+    this.ringBaseKey = key
+    this.ringBase = best
+    return best
+  },
+
+  layoutBoard() {
+    var t = this.t
+    var z = this.zoomSteps[this.zoomIdx]
+    // 尺寸口径：正方形格、缝隙尽量均匀、盘面贴满屏幕。
+    // 28 格 => 上下 a 格（含两角）+ 左右 b 格：2a+2b−4 = 28（a+b=16）。
+    // 竖长屏固定 8/6 会让左右 6 格摊满 486px（侧缝约 46px）、上下只有 3px（玩家反馈）；
+    // 现按屏幕纵横比选 a（跑道屏为 4/12），缩放档只等比放大，不重排格数。
+    var base = this.baseRing()
+    var cw = Math.max(9, Math.round(base.cw * z))
+    var ch = cw
+    var gh = Math.max(1, Math.round(base.gh * z))
+    var gv = Math.max(1, Math.round(base.gv * z))
+    var topN = base.a
+    var sideN = base.b - 2
+    var ringW = 2 * EDGE + cw * topN + (topN - 1) * gh
+    var ringH = 2 * EDGE + cw * base.b + (base.b - 1) * gv
+    this.stageW = Math.max(192, ringW + 2 * SLACK)
+    this.stageH = Math.max(this.pageH, ringH + 2 * SLACK)
+    this.ringX = Math.round((this.stageW - ringW) / 2)
+    this.ringY = Math.round((this.stageH - ringH) / 2)
+
+    var topY = EDGE
+    var botY = EDGE + (base.b - 1) * (cw + gv)
+    var sideY = []
+    for (var j = 0; j < sideN; j++) sideY.push(EDGE + (j + 1) * (cw + gv))
+    var xs = []
+    for (var i = 0; i < topN; i++) xs.push(EDGE + i * (cw + gh))
+    var rightX = EDGE + (topN - 1) * (cw + gh)
+    var leftX = EDGE
+
+    var pos = []
+    for (i = 0; i < topN; i++) pos.push([xs[i], topY])
+    for (j = 0; j < sideN; j++) pos.push([rightX, sideY[j]])
+    for (i = 0; i < topN; i++) pos.push([xs[topN - 1 - i], botY])
+    for (j = 0; j < sideN; j++) pos.push([leftX, sideY[sideN - 1 - j]])
+
+    // 字形字号同时受格宽与格高约束（矮屏只放得下更小的字形）
+    var fs = Math.min(Math.max(6, Math.round(Math.min(cw * 0.5, ch * 0.5))), Math.max(6, ch - 4))
+    var lh = fs + 2
+    var roomForGlyph = (lh + 2) <= ch
+    var cells = []
+    for (var k = 0; k < N; k++) {
+      var rc = this.ap.RING[k]
+      var zone = rc.color || 0
+      var active = zone === 0 || zone === 1
+      var bg = active ? ZONE_BG[zone] : MUTED
+      var fg = active ? ZONE_FG[zone] : '#C4C8BE'
+      var glyph = rc.kind === 'start' ? '起' : (rc.kind === 'fly' ? '飞' : (rc.kind === 'entry' ? '入' : ''))
+      if (!roomForGlyph) glyph = ''
+      cells.push({
+        x: pos[k][0],
+        y: pos[k][1],
+        w: cw,
+        h: ch,
+        bg: bg,
+        fg: fg,
+        glyph: glyph,
+        border: k === this.flashCell ? t.primary : (rc.kind === 'start' ? t.onSurface : 'rgba(0,0,0,0.35)'),
+        fs: fs,
+        lh: lh
+      })
+    }
+    this.cells = cells
+
+    // 冲刺道：每方 6 格小格，排在环内（金额板下方）。
+    // 宽度必须收进「左右两列格子之间的净宽」innerW —— 新盘面（上下 4 格、左右 12 格）
+    // 的两列更宽，沿用按环宽算的 6 格宽会压到侧边格子上。
+    var innerX = EDGE + cw
+    var innerW = rightX - innerX
+    var menuH = this.isPill ? 34 : 0
+    var menuGap = menuH > 0 ? 4 : 0
+    var hcw = Math.max(9, Math.min(Math.round(cw * 0.95), Math.floor((innerW - 2 * (HOME_N - 1)) / HOME_N)))
+    var hch = Math.max(7, Math.round(ch * 0.5))
+    var rowW = hcw * HOME_N + 2 * (HOME_N - 1)
+    var rowX = innerX + Math.round((innerW - rowW) / 2)
+    // 环内正中自上而下：状态行 → 金额板 → 冲刺道两行 → 骰子 → 胶囊屏「菜单」。
+    // 尺寸按「环内可用高度」缩放并设下限（矮屏 / 缩小档位下环体很扁，固定尺寸会顶穿上下排）。
+    var availH = Math.max(40, ringH - 2 * EDGE - 2 * ch)
+    var statusH = Math.min(Math.round(20 * this.uiS), Math.max(11, Math.round(availH * 0.08)))
+    var moneyH = Math.min(Math.round(40 * this.uiS), Math.max(18, Math.round(availH * 0.15)))
+    var diceW = Math.min(Math.round(40 * this.uiS), Math.max(15, Math.round(availH * 0.17)))
+    hch = Math.min(hch, Math.max(7, Math.round(availH * 0.1)))
+    var contentH = statusH + 4 + moneyH + 4 + (hch + 3) * 2 + 4 + diceW + menuGap + menuH
+    var stackTop = Math.round((topY + ch + botY) / 2 - contentH / 2)
+    this.statusY = stackTop
+    this.statusH = statusH
+    // 状态行文案已缩短（「1/30 · 蓝方」），字号再按净宽收敛
+    this.statusFs = Math.max(9, Math.min(Math.round(13 * this.uiS) + (this.fontBump || 0), Math.floor(innerW / 9)))
+    this.ringStatusX = innerX
+    this.ringStatusW = innerW
+    this.moneyW = Math.min(innerW - 2, Math.round(140 * this.uiS))
+    this.moneyX = innerX + Math.round((innerW - this.moneyW) / 2)
+    this.moneyY = stackTop + statusH + 4
+    this.moneyH = moneyH
+    var rowY0 = this.moneyY + moneyH + 4
+    var rowY1 = rowY0 + hch + 3
+    var homeCells = []
+    for (var p = 0; p < 2; p++) {
+      for (var h = 0; h < HOME_N; h++) {
+        homeCells.push({
+          x: rowX + h * (hcw + 2),
+          y: p === 0 ? rowY0 : rowY1,
+          w: hcw,
+          h: hch,
+          bg: MUTED,
+          border: p === 0 ? ZONE_BG[0] : ZONE_BG[1]
+        })
+      }
+    }
+    this.homeCells = homeCells
+    this.diceW = diceW
+    this.diceR = Math.round(diceW * 0.18)
+    this.diceX = innerX + Math.round((innerW - diceW) / 2)
+    this.diceY = rowY1 + hch + 6
+    // 投掷动画的基准值：抖动时在基准上偏移，动画结束由 buildBoard 复位
+    this.diceX0 = this.diceX
+    this.diceY0 = this.diceY
+    this.diceW0 = diceW
+    // 胶囊屏「菜单」兜底按钮：放在骰子下方、整条净宽（≥34 触摸目标）。
+    // 部分手环 ROM 不派发侧滑返回手势，没有可见入口就出不了对局；方屏由 CSS 隐藏。
+    this.menuBtnW = innerW
+    this.menuBtnH = menuH
+    this.menuBtnFs = 12 + (this.fontBump || 0)
+    this.menuBtnX = innerX
+    this.menuBtnY = this.diceY + diceW + menuGap
+    this.innerW = innerW
+    this.moneyRows = this.moneyRowsOf()
+    this.round = this.st.round
+    this.maxRounds = this.ap.MAX_ROUNDS
+    this.ringW = ringW
+    this.ringH = ringH
+    // 供 syncTokens() 复用的几何 / 冲刺道坐标（避免动画每拍重算）
+    this.geoCw = cw
+    this.geoCh = ch
+    this.cellPos = pos
+    this.rowX = rowX
+    this.rowW = rowW
+  },
+
+  // 飞机徽章：环上 / 冲刺道 / 到家。逐格前进时给「正在飞的那架」加一跳
+  // （hop 由 animate() 逐拍切换）。逐格动画每拍只调用这一段。
+  syncTokens() {
+    var cw = this.geoCw
+    var pos = this.cellPos
+    var homeCells = this.homeCells
+    var tok = Math.max(8, Math.round(cw * 0.8))
+    var toks = []
+    for (var q = 0; q < 2; q++) {
+      for (var a = 0; a < this.ap.PLANES; a++) {
+        var d = this.disp[q][a]
+        // 已到家的飞机不再画在盘面上：环内净宽变窄后，原「冲刺道右侧」会被右侧格子压住；
+        // 到家数量由金额板（0/4 到家）显示，避免徽章叠到侧边格。
+        if (d < 0 || d >= this.ap.FINISH) continue
+        // 冲刺道小格只有环格的一半宽，徽章要跟着缩小，否则会压到相邻小格
+        var baseTok = tok
+        if (d >= this.ap.TRACK) {
+          baseTok = Math.min(tok, Math.max(8, homeCells[q * HOME_N + (d - this.ap.TRACK)].w - 2))
+        }
+        var side = baseTok + ((q === this.hopPlayer && a === this.hopPlane) ? this.hop : 0)
+        var pt = this.posOf(q, a, d, pos, homeCells, side)
+        if (!pt) continue
+        toks.push({
+          x: pt[0],
+          y: pt[1],
+          d: side,
+          r: Math.round(side / 2),
+          op: 1,
+          img: themeMod.planeImage(q)
+        })
+      }
+    }
+    this.tokens = toks
+  },
+
+  // 输入：玩家、机号、步数 d；输出：该飞机徽章的 [x, y]（左上角）。
+  posOf(player, plane, d, ringPos, homeCells, tok) {
+    if (d < 0) return null
+    // 坐标分段必须跟规则层一致：外圈 0..TRACK−1，冲刺道 TRACK..FINISH−1，FINISH 到家。
+    // （旧实现写死 52 格外圈的 51/57 分界，冲刺道里的飞机会算到环外、徽章直接消失。）
+    if (d <= this.ap.TRACK - 1) {
+      var ring = this.ap.ringOf(player, d)
+      if (ring < 0 || ring >= N) return null
+      var bp = ringPos[ring]
+      // 同格多机时按机号错开，避免完全重叠
+      var ox = (plane % 2) * Math.round(tok * 0.45)
+      var oy = Math.floor(plane / 2) * Math.round(tok * 0.45)
+      return [bp[0] + Math.round((this.cells[ring].w - tok) / 2) + ox, bp[1] + Math.round((this.cells[ring].h - tok) / 2) + oy]
+    }
+    if (d < this.ap.FINISH) {
+      var hc = homeCells[player * HOME_N + (d - this.ap.TRACK)]
+      return [hc.x + Math.round((hc.w - tok) / 2), hc.y + Math.round((hc.h - tok) / 2)]
+    }
+    // 到家（d ≥ FINISH）的飞机不画在盘面（见 syncTokens），由金额板的「N/4 到家」显示
+    return null
+  },
+
+  moneyRowsOf() {
+    var act = this.turn
+    var fs = Math.max(8, Math.min(Math.round(11 * this.uiS) + (this.fontBump || 0), Math.floor(this.innerW / 9)))
+    var n = this.countDone(0)
+    var m = this.countDone(1)
+    return [
+      {
+        name: this.mode === 'ai' ? '蓝方·我' : '蓝方·1',
+        money: n + '/' + this.ap.PLANES,
+        fs: fs,
+        color: act === 0 ? this.t.primary : this.t.onSurfaceVariant
+      },
+      {
+        name: this.mode === 'ai' ? '红方·AI' : '红方·2',
+        money: m + '/' + this.ap.PLANES,
+        fs: fs,
+        color: act === 1 ? this.t.error : this.t.onSurfaceVariant
+      }
+    ]
+  },
+
+  countDone(player) {
+    var n = 0
+    for (var i = 0; i < this.ap.PLANES; i++) if (this.st.planes[player][i] >= this.ap.FINISH) n++
+    return n
+  },
+
+  showDice(a) {
+    this.diceA = String(a)
+    this.diceImgA = themeMod.diceImage(String(a))
+  },
+
+  syncTurn() {
+    var names = this.ap.NAMES || ['蓝方', '红方']
+    // 状态行在环内净宽里显示，去掉「轮到」等冗余字
+    this.turnText = names[this.turn] + (this.mode === 'ai' ? (this.turn === 0 ? '·你' : '·对手') : '')
+    this.turnColor = this.turn === 0 ? this.t.primary : this.t.error
+    this.moneyRows = this.moneyRowsOf()
+  },
+
+  isHumanTurn() {
+    return this.mode === 'pvp' || this.turn === 0
+  },
+
+  // ── 回合驱动 ────────────────────────────────────────────────────
+  drive() {
+    var that = this
+    if (this.state !== 'playing') return
+    if (this.isHumanTurn()) {
+      this.dlg = ''
+      toastMod.toast('轮到 ' + (this.ap.NAMES ? this.ap.NAMES[this.turn] : '') + '，点骰子投掷', 1600)
+      return
+    }
+    this.after(700, function () { that.aiStep() })
+  },
+
+  tapDice() {
+    if (this.state !== 'playing' || this.dlg !== '' || this.busy) return
+    if (!this.isHumanTurn()) return
+    this.dlgWho = (this.ap.NAMES || ['蓝方', '红方'])[this.turn]
+    this.dlg = 'roll'
+  },
+
+  confirmRoll() {
+    this.dlg = ''
+    if (!this.isHumanTurn()) return
+    this.usedReroll = false   // 每次新投掷都有一次重掷机会
+    this.performRoll(this.turn)
+  },
+
+  // 输入：无；输出：规则层 rand（挑战 = 种子派生的 0~1；普通 = undefined → Math.random）。
+  randValue() {
+    return this.dailyRng ? this.dailyRng.next() : undefined
+  },
+
+  performRoll(player) {
+    var that = this
+    var dice = this.ap.rollDice(this.randValue())
+    this.busy = true
+    haptic.place()
+    var i = 0
+    var tick = function () {
+      if (i >= 7) {
+        that.showDice(dice)
+        haptic.place()
+        that.diceW = that.diceW0 + Math.round(that.diceW0 * 0.14)
+        that.diceX = that.diceX0 - Math.round(that.diceW0 * 0.07)
+        that.diceY = that.diceY0 - Math.round(that.diceW0 * 0.07)
+        that.after(110, function () {
+          that.diceW = that.diceW0
+          that.diceX = that.diceX0
+          that.diceY = that.diceY0
+          that.busy = false
+          that.afterRoll(player, dice)
+        })
+        return
+      }
+      that.diceImgA = themeMod.diceImage(String(1 + Math.floor(Math.random() * 6)))
+      that.diceW = that.diceW0 + Math.floor(Math.random() * 4) - 1
+      that.diceX = that.diceX0 + Math.floor(Math.random() * 5) - 2
+      that.diceY = that.diceY0 + Math.floor(Math.random() * 5) - 2
+      i++
+      that.after(85, tick)
+    }
+    tick()
+  },
+
+  // 掷骰结束：先给人类玩家一次「用重掷券」的机会（库存为 0 或已用过则不弹）
+  afterRoll(player, dice) {
+    if (this.shouldOfferReroll(player)) {
+      this.rerollDice = dice
+      this.pendingDice = dice
+      this.pendingPlayer = player
+      this.dlg = 'reroll'
+      return
+    }
+    this.resolveRoll(player, dice)
+  },
+
+  // 输入：玩家号；输出：本次掷骰是否弹出重掷询问
+  shouldOfferReroll(player) {
+    if (this.mode === 'ai' && player === 1) return false
+    return this.rerolls > 0 && !this.usedReroll
+  },
+
+  // 重掷弹窗：保留本次点数，正常起飞/前进
+  confirmMove() {
+    this.dlg = ''
+    this.resolveRoll(this.pendingPlayer, this.pendingDice)
+  },
+
+  // 重掷弹窗：扣 1 张重掷券并重新投掷（本次投掷不再重复询问）
+  doReroll() {
+    var that = this
+    var player = this.pendingPlayer
+    this.dlg = ''
+    this.usedReroll = true
+    this.busy = true   // 扣券是异步的，期间挡住骰子热区，避免连点再掷
+    economy.useItem('reroll').then(function (r) {
+      if (!r.ok) {
+        toastMod.toast('重掷券库存不足')
+        that.busy = false
+        that.resolveRoll(player, that.pendingDice)
+        return
+      }
+      that.rerolls = r.items.reroll
+      toastMod.toast('重掷券 -1 · 剩 ' + that.rerolls + ' 张')
+      that.performRoll(player)
+    })
+  },
+
+  resolveRoll(player, dice) {
+    var that = this
+    this.pendingPlayer = player
+    var moves = this.ap.movable(this.st, player, dice)
+    if (!moves.length) {
+      toastMod.toast((this.ap.NAMES || ['蓝方', '红方'])[player] + '掷出 ' + dice + '，飞机无法起飞')
+      this.after(600, function () { that.endTurn(player) })
+      return
+    }
+    // 只有人机模式的 1 号（AI）才自动选择；双人模式 1 号也是真人，要走选择弹窗
+    if (this.mode === 'ai' && player === 1) {
+      var mv = this.ap.aiChoose(this.st, 1, moves, this.randValue())
+      this.execMove(1, mv)
+      return
+    }
+    if (moves.length === 1) {
+      this.execMove(player, moves[0])
+      return
+    }
+    var choices = []
+    for (var k = 0; k < moves.length; k++) {
+      var m = moves[k]
+      var label = m.launch ? ((m.plane + 1) + ' 号 · 起飞')
+        : m.finished ? ((m.plane + 1) + ' 号 · 到达终点')
+        : ((m.plane + 1) + ' 号 · 前进 ' + m.d + ' 格')
+      var sub = m.capture > 0 ? '击落 ' + m.capture + ' 架' : (m.flew ? '航线前跳' : '')
+      choices.push({ label: label, sub: sub })
+    }
+    this.choices = choices
+    this.pendingMoves = moves
+    this.dlg = 'choose'
+  },
+
+  doChoose(ci) {
+    var mv = this.pendingMoves && this.pendingMoves[ci]
+    this.dlg = ''
+    if (!mv) return
+    this.execMove(this.pendingPlayer, mv)
+  },
+
+  // 执行动作：先逐格演出，再落到引擎
+  execMove(player, mv) {
+    var that = this
+    var from = this.disp[player][mv.plane]
+    var path = []
+    if (mv.launch) {
+      path = [0]
+    } else if (mv.d > from) {
+      for (var d = from + 1; d <= mv.d; d++) path.push(d)
+    } else {
+      for (var d2 = from - 1; d2 >= mv.d; d2--) path.push(d2)
+    }
+    this.animate(player, mv.plane, path, function () {
+      var r = that.ap.apply(that.st, player, mv)
+      that.st = r.state
+      that.disp = [[].concat(that.st.planes[0]), [].concat(that.st.planes[1])]
+      that.buildBoard()
+      that.syncTurn()
+      toastMod.toastEvents(r.log, 2)
+      if (mv.capture > 0) haptic.capture()
+      var over = that.ap.checkOver(that.st)
+      if (over) { that.endGame(over); return }
+      if (r.extra) {
+        // 连投（掷 6 或撞机）：同一名玩家再来一次，不换人
+        toastMod.toast((that.ap.NAMES || ['蓝方', '红方'])[player] + '获得连投')
+        if (player === 0) {
+          that.after(600, function () { that.drive() })
+        } else {
+          that.after(700, function () { that.aiStep() })
+        }
+        return
+      }
+      that.endTurn(player)
+    })
+  },
+
+  // 逐格推进飞机（只改显示位置 this.disp，不动引擎状态）；隔步给该机一跳，落点格闪一下。
+  animate(player, plane, path, cb) {
+    var that = this
+    var i = 0
+    var stepFn = function () {
+      if (i >= path.length) {
+        that.hop = 0
+        that.hopPlayer = -1
+        that.hopPlane = -1
+        that.flashCell = that.ap.ringOf(player, that.disp[player][plane])   // 落定：闪一下落点格
+        that.buildBoard()
+        that.after(240, function () {
+          that.flashCell = -1
+          that.buildBoard()
+        })
+        cb()
+        return
+      }
+      that.disp[player][plane] = path[i]
+      that.hopPlayer = player
+      that.hopPlane = plane
+      that.hop = (i % 2 === 0) ? 2 : 0
+      that.syncTokens()                              // 每拍只更飞机徽章，不重建整块盘面
+      i++
+      that.after(STEP_MS, stepFn)
+    }
+    if (!path.length) {
+      that.hop = 0
+      that.hopPlayer = -1
+      that.hopPlane = -1
+      cb()
+      return
+    }
+    this.after(STEP_MS, stepFn)
+  },
+
+  endTurn(player) {
+    var over = this.ap.checkOver(this.st)
+    if (over) { this.endGame(over); return }
+    var that = this
+    if (this.mode === 'pvp') {
+      this.turn = 1 - player
+      if (this.turn === 0) this.st.round++
+      this.after(400, function () { that.drive() })
+      return
+    }
+    if (player === 0) {
+      this.turn = 1
+      this.after(700, function () { that.aiStep() })
+    } else {
+      this.st.round++
+      this.turn = 0
+      this.after(400, function () { that.drive() })
+    }
+  },
+
+  aiStep() {
+    if (this.state !== 'playing' || this.mode === 'pvp') return
+    if (this.isHumanTurn()) { this.drive(); return }
+    this.performRoll(1)
+  },
+
+  closeDlg() {
+    this.dlg = ''
+    this.drive()
+  },
+
+  noop() {},
+
+  onMaskTap() {
+    if (this.dlg === 'exit' || this.dlg === 'over') this.closeDlg()
+  },
+
+  // ── 抽屉 / 缩放 / 退出 ──────────────────────────────────────────
+  closeMenu() { this.showMenu = false },
+  menuZoom(dir) { if (dir > 0) this.zoomIn(); else this.zoomOut() },
+  menuRestart() {
+    this.closeMenu()
+    this.newRound()
+  },
+  menuExit() { this.closeMenu(); this.dlg = 'exit' },
+
+  zoomIn() {
+    if (this.zoomIdx >= this.zoomSteps.length - 1) return
+    this.zoomIdx++
+    this.buildBoard()
+    this.centerScene()
+  },
+
+  zoomOut() {
+    if (this.zoomIdx <= 0) return
+    this.zoomIdx--
+    this.buildBoard()
+    this.centerScene()
+  },
+
+  centerScene() {
+    try {
+      this.$element('scene').scrollTo({
+        left: Math.max(0, Math.round((this.stageW - 192) / 2)),
+        top: Math.max(0, Math.round((this.stageH - this.pageH) / 2)),
+        behavior: 'smooth'
+      })
+    } catch (e) {}
+  },
+
+  endGame(over) {
+    this.clearTimers()
+    this.state = 'over'
+    var res = over.result
+    this.resultText = res === 'win' ? '你赢了' : res === 'lose' ? '你输了' : '和局'
+    if (this.mode === 'pvp') this.resultText = res === 'win' ? '蓝方获胜' : res === 'lose' ? '红方获胜' : '和局'
+    this.resultReason = over.reason + '（蓝 ' + this.countDone(0) + '/4 · 红 ' + this.countDone(1) + '/4 到家）' +
+      ' · 棋币 +' + economy.coinFor(res, this.mode)
+    this.resultColor = res === 'win' ? this.t.resultWin : res === 'lose' ? this.t.resultLose : this.t.resultDraw
+    if (res === 'win') haptic.celebrate()
+    else haptic.result()
+    if (!this.isChallenge && !this.isCampaign) {
+      config.clearPref('save_aeroplane')
+      this.savedSnap = null
+      this.hasSave = false
+    }
+    var that = this
+    if (this.isCampaign) {
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: res === 'win', moves: this.st.round }).then(function (info) {
+        if (info && info.text) that.resultReason = that.resultReason + ' · ' + info.text
+      })
+    }
+    config.recordResult('aeroplane', res, this.mode).then(function (list) {
+      var st = config.streakOf(list || [])
+      if (res === 'win' && st.cur >= 2) that.resultText = that.resultText + ' · ' + st.cur + ' 连胜'
+    })
+    if (this.isChallenge && res === 'win') economy.completeDaily('aeroplane')
+    this.dlg = 'over'
+  },
+
+  playAgain() {
+    this.dlg = ''
+    this.newRound()
+  },
+
+  exit() {
+    if (this.state !== 'playing') {
+      this.clearTimers()
+      router.back()
+      return
+    }
+    this.dlg = 'exit'
+  },
+
+  leaveHome(save) {
+    this.dlg = ''
+    this.showMenu = false
+    this.clearTimers()
+    if (save) this.saveSnapshot()
+    else config.clearPref('save_aeroplane')
+    router.back()
+  },
+
+  // 落存档快照：回到主页后可「继续上局」恢复（快照带版本号）。
+  saveSnapshot() {
+    if (!this.st) return
+    config.saveSetting('save_aeroplane', {
+      v: SAVE_V,
+      st: this.st,
+      disp: this.disp,
+      turn: this.turn,
+      mode: this.mode,
+      difficulty: this.difficulty || 'normal'
+    })
+  }
+}
+</script>

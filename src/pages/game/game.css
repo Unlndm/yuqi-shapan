@@ -1,0 +1,777 @@
+/*
+ * pages/game 样式 — 对局页；颜色全部内联绑定 Token。
+ * 棋盘全屏：.page 无上下内边距，.vp（原生 scroll）铺满整页；顶栏/底栏已移除，
+ * 回合指示做成顶部胶囊浮层（.status-pill），控制项由「侧滑返回」呼出抽屉（.drawer）。
+ * 屏幕＝摄像机：拖动 .vp 的滚动＝在舞台上移动摄像机，棋盘自身不参与任何绝对定位平移；
+ * 落子由铺满棋盘的 .tap-layer 的 @click 触发（见 game.ux 的 onBoardClick）。
+ * 屏型差异：仅「跑道屏（胶囊屏，pill-shaped）」改为控件居中单列；
+ * 方屏（手环 Pro / REDMI Watch）保持原设计，只在 rect 下做少量紧凑化。
+ * 大屏方表（REDMI Watch）的整体缩小走 screen.js 的 uiScale，
+ * 只作用于内联绑定的字号/几何（CSS 媒体查询覆盖不到内联样式）。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  align-items: center;
+  position: relative;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下）。
+   只加 position: relative（不设 z-index），既有绝对定位浮层（回合胶囊 / 抽屉 / 弹窗）
+   仍在文档更后面，层级不受影响。 */
+.setup,
+.vp {
+  position: relative;
+}
+
+/* 棋盘视口：原生滚动容器（屏幕＝摄像机）。定宽定高，棋盘超出时才能滚；
+   显式 flex-direction: column —— scroll 子元素默认横向排列（见 TODO 已知问题）；
+   不写 overflow —— 裁剪与边界钳制由 scroll 组件自己负责。 */
+.vp {
+  width: 192px;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* 舞台包围盒：尺寸 = max(视口, 棋盘)，由脚本内联绑定；只做坐标原点。
+   棋盘是它的**流式**子项（显式宽高 + 外边距偏移）：绝对定位的中间盒在该机型运行时不可靠
+   （实测被撑满并落在原点，导致留白上下左右都不等），流式盒 + 外边距才是全站验证过的写法。 */
+.stage {
+  position: relative;
+}
+
+/* 棋盘盒：自身带底色（＝棋盘底板），内部线条/棋子以它为包含块（默认 position: relative）。
+   overflow:hidden 是底材的兜底：位图若按原图物理像素渲染而大于棋盘盒，会被裁在盒内
+   （视觉上恰好铺满棋盘），绝不会把盒子撑大 —— 这才是安全的容器化方式。 */
+.board {
+  position: relative;
+  overflow: hidden;
+}
+
+/* 棋盘底材：绝对定位叶节点（与 .grid-line/.star/.stone 同类），显式坐标由模板绑定。
+   刻意不用 background-image —— 实测该写法在本机型不渲染。 */
+.board-mat {
+  position: absolute;
+}
+
+/* 落子热区：铺满整个舞台、置于最上层、完全透明（不设背景，避免平台默认底色）。
+   点它即落子，滑动由外层 scroll 接管 —— 点与拖的区分交给框架。 */
+.tap-layer {
+  position: absolute;
+}
+
+.grid-line {
+  position: absolute;
+}
+
+.star {
+  position: absolute;
+  border-radius: 2px;
+}
+
+.stone {
+  position: absolute;
+  border-radius: 50%;
+  border-width: 1px;
+  transition: opacity 200ms;
+}
+
+/* 黑白棋合法落点提示点：小圆点，尺寸/坐标由 game.ux 的 syncHints 算好（绝对定位叶节点） */
+.hint {
+  position: absolute;
+  border-radius: 50%;
+}
+
+/* 残局提示高亮：目标格描边方框（透明底，不遮挡棋子），尺寸/坐标由 game.ux 算好 */
+.puzzle-hint {
+  position: absolute;
+  border-width: 2px;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.piece {
+  position: absolute;
+  border-radius: 50%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 200ms;
+}
+
+.piece-glyph {
+  font-weight: bold;
+  line-height: 14px;
+}
+
+.last-mark {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.marker {
+  position: absolute;
+  border-width: 2px;
+  background-color: transparent;
+  border-radius: 2px;
+}
+
+/* 回合指示：顶部居中胶囊浮层。压低到 top 4px、高 20px（底边 24 设计像素），
+   与棋盘的让位量 PILL_CLEAR=17 对应 —— 既让开棋盘最上排（用户反馈原先挡视线），
+   又不会把棋盘整体推得过低。 */
+.status-pill {
+  position: absolute;
+  top: 4px;
+  left: 0px;
+  width: 192px;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+}
+
+.status-cap {
+  height: 20px;
+  border-radius: 10px;
+  padding-left: 10px;
+  padding-right: 10px;
+  flex-direction: row;
+  align-items: center;
+}
+
+/* 胶囊屏「菜单」兜底按钮：与顶部回合胶囊同一行（在其左侧），点开控制抽屉。
+   ⚠️ 部分手环 ROM 不派发侧滑返回手势（onBackPress 不触发）—— 没有这个可见入口，
+   玩家进对局后就出不来了（玩家实机报障）。因此：默认显示，只在方屏隐藏
+   （方屏有返回键/手势，且顶部让位 PILL_CLEAR=17 只够放回合胶囊）。
+   尺寸（2026-10-23）：44×20 → **44×34** —— 玩家反馈「围棋里这个抽屉很难触发」，
+   20 高只有约 3.7mm，低于本项目 34 的触摸目标下限；加高后顺带减少「想点菜单、
+   结果点到棋盘上」的误触（按钮吃掉的那块面积不再归落子热区）。 */
+.menu-fab {
+  width: 44px;
+  height: 34px;
+  margin-right: 6px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 17px;
+  font-size: 12px;
+  line-height: 32px;
+  text-align: center;
+}
+
+@media screen and (shape: rect) {
+  .menu-fab {
+    display: none;
+  }
+}
+
+/* 指示点：填充为棋子色，另加 1px 描边保证任何底色上都可见
+   （浅色模式下白子 #FFFFFF 压近白胶囊底只有 1.22 对比度，纯填充看不见）。
+   8px + 1px 描边 = 外径 10px，与原尺寸一致。 */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+  border-radius: 5px;
+  margin-right: 6px;
+}
+
+.turn-text {
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 20px;
+}
+
+/* 抽屉面板：底部上滑面板（侧滑返回呼出：悔棋/停手/重开/退出/缩放） */
+.drawer-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.5);
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.drawer {
+  width: 192px;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  padding-bottom: 16px;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+}
+
+.drawer-grip {
+  width: 32px;
+  height: 4px;
+  border-radius: 2px;
+  margin-bottom: 10px;
+}
+
+/* 抽屉条目容器：默认单列（胶囊屏 7 项 × 50 放得下）；rect 档在下方媒体查询里改双列网格 */
+.d-grid {
+  width: 192px;
+  flex-direction: column;
+  align-items: center;
+}
+
+.d-item {
+  width: 168px;
+  height: 44px;
+  line-height: 44px;
+  border-radius: 22px;
+  font-size: 14px;
+  margin-bottom: 6px;
+  background-color: transparent;
+}
+
+/* 开局设置面板（idle 态） */
+/* 面板视口：内容在方屏（画布高 300 / 228）上约 322px，超出屏高 —— 必须可滚动，
+   否则「玩法介绍 / 返回」被裁掉。胶囊屏（471）内容本来就放得下，滚动条不会出现。 */
+.panel-vp {
+  position: relative;
+  width: 192px;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+}
+
+.setup {
+  width: 168px;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 36px;
+  margin-bottom: 20px;
+}
+
+.s-title {
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  margin-bottom: 12px;
+}
+
+.s-label {
+  line-height: 20px;
+  margin-bottom: 6px;
+}
+
+.chips {
+  flex-direction: row;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+/* chip：选项按钮，高度统一到触摸目标下限 34（原 32 —— 手环上点不准），圆角取半高 */
+.chip {
+  height: 34px;
+  line-height: 34px;
+  border-radius: 17px;
+  font-size: 14px;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-right: 8px;
+  flex: none;
+  min-height: 34px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-style: solid;
+}
+
+.chip-t {
+  width: 100%;
+  line-height: 32px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.s-start {
+  width: 168px;
+  height: 48px;
+  margin-top: 8px;
+  border-radius: 24px;
+  font-size: 14px;
+}
+
+.s-back {
+  width: 168px;
+  height: 46px;
+  margin-top: 8px;
+  border-radius: 23px;
+  font-size: 14px;
+  background-color: transparent;
+}
+
+/* 匹配加载页 */
+.matching {
+  width: 168px;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 68px;
+}
+
+.m-title {
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+}
+
+.m-mode {
+  font-size: 13px;
+  line-height: 19px;
+  margin-top: 2px;
+}
+
+.m-dots {
+  flex-direction: row;
+  justify-content: center;
+  margin-top: 24px;
+  margin-bottom: 16px;
+}
+
+.m-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 5px;
+  margin-left: 5px;
+  margin-right: 5px;
+  transition: opacity 400ms;
+}
+
+.m-status {
+  font-size: 15px;
+  line-height: 21px;
+}
+
+.m-diff {
+  font-size: 15px;
+  font-weight: bold;
+  line-height: 22px;
+  margin-top: 4px;
+}
+
+/* 弹窗（离开确认 / 重开确认 / 终局）。宽度/内边距分机型两档，见文件末尾的 rect 覆盖块；
+   数值与 utils/metrics.js 的 MODAL / BTN 一一对应（默认 = 胶囊屏档）。 */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.6);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.modal-dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1px;
+  border-radius: 5px;
+  margin-bottom: 6px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 24px;
+}
+
+.modal-sub {
+  margin-top: 2px;
+  margin-bottom: 10px;
+  line-height: 19px;
+}
+
+/* 弹窗内的整行按钮：规格统一自 utils/metrics.js（BTN.dialogW/dialogH/dialogMt）——
+   六页必须完全一致，scripts/check-all.py 会逐页核对 width/height。 */
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+/* 兵升变四选一：一行四个 30×34（30×4 + 3×3 = 129 ≤ 弹窗内宽 130）；
+   高度 34 满足触摸目标下限，每项左外边距由模板内联绑定（首项 0）。 */
+.promo-row {
+  flex-direction: row;
+  width: 130px;
+  margin-top: 10px;
+}
+.promo-btn {
+  width: 30px;
+  height: 34px;
+  line-height: 34px;
+  border-radius: 9px;
+  font-size: 14px;
+  text-align: center;
+}
+/* 跑道屏（胶囊屏）：控件居中、单列排 —— 只作用于 pill-shaped，方屏保持原设计 */
+@media screen and (shape: pill-shaped) {
+  /* 顶部安全区：胶囊屏短边是半圆（外接圆半径 R ≈ 屏宽/2 = 96 设计像素），
+     在高度 y 处可见区左边界 xmin = R − √(R² − (R − y)²)。
+     顶部浮层「菜单 44 + 间距 6 + 回合胶囊约 90」≈ 140 宽、居中 → 左端 x = 26；
+     代入得 y ≥ 30.3。浮层高（2026-10-23 起）= 菜单按钮 34，故 top 由 30 抬到 32
+     （留 1.7px 余量），底边 = 66；棋盘让位量见 game.ux 的 PILL_CLEAR_CAPSULE = 60。 */
+  /* 玩家 2026-10-24：「菜单」不要和回合胶囊放在同一排 —— 胶囊屏单列纵向堆叠：
+     菜单 44×34 在最上（y=6 处可见宽 63~129，44 宽居中完整可点），回合胶囊在下。
+     整列高 58（6→64），棋盘让位量 PILL_CLEAR_CAPSULE=60 不变（仅 4px 压边，与改动前同为压边）。 */
+  .status-pill {
+    top: 6px;
+    flex-direction: column;
+  }
+  .menu-fab {
+    margin-right: 0px;
+    margin-bottom: 4px;
+  }
+  .setup {
+    align-items: center;
+  }
+  .chips {
+    width: 168px;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+  .chips-mode {
+    height: 80px;
+  }
+  .chips-size {
+    height: 160px;
+  }
+  .chip {
+    width: 168px;
+    text-align: center;
+    padding-left: 0px;
+    padding-right: 0px;
+    margin-right: 0px;
+    margin-bottom: 6px;
+  }
+}
+
+/* 方屏/矩形手表：仅紧凑化（不改排布，尺寸仍按原设计） */
+@media screen and (shape: rect) {
+  .setup {
+    margin-top: 18px;
+  }
+  .matching {
+    margin-top: 20px;
+  }
+  .turn-text {
+    font-size: 13px;
+  }
+  .s-start,
+  .s-back {
+    height: 44px;
+  }
+  /* 方屏正文宽 176：开局设置 / 匹配加载页此前仍是胶囊屏的 168，与内容页口径不一致。
+     统一到 176（面板内左右各留 8，按钮加宽 8px 更好点）。 */
+  .setup,
+  .matching,
+  .s-start,
+  .s-back {
+    width: 176px;
+  }
+  /* 抽屉：方屏画布高只有 300 / 228，单列 7 项（350）必被裁 →
+     改双列网格：每格 86×36（≥34 触摸目标），6~7 项占 3~4 行 ≈ 120~160，全部可见。 */
+  .d-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .d-item {
+    width: 86px;
+    height: 36px;
+    line-height: 36px;
+    border-radius: 18px;
+    font-size: 12px;
+    margin-left: 2px;
+    margin-right: 2px;
+    margin-bottom: 4px;
+  }
+}
+
+/* ── 动效层（与大富翁 / 飞行棋 / 三个单人页统一口径） ──────────────
+   平台依据：官方 animation-style 文档确认支持 transform / animation / @keyframes
+   （@keyframes 内可用 background-color、opacity、width/height、transform，0% 与 100% 必须都写）。
+   纪律：只动 opacity / transform（GPU 友好）、240~320ms、cubic-bezier(0.16,1,0.3,1)、
+   一律挂**静态 class**（元素挂载即播放；本工程未验证动态 class 绑定）。
+   ⚠️ 本页此前完全没有动效层（这一轮补上）—— 之前的说明文档把「三页都有动效」写过头了。 */
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-title-pop {
+  0% { opacity: 0; transform: scale(0.88); }
+  60% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal-title { animation: ui-title-pop 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-drawer-in {
+  0% { opacity: 0; transform: translateY(24px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.drawer { animation: ui-drawer-in 260ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-panel-in {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.setup,
+.matching { animation: ui-panel-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 弹窗分机型档（2026-10-23） ──────────────────────────────────────
+   问题：六页弹窗原先统一 160~168 宽、按钮 142×40；在「矮画布」方屏
+   （大屏方表画布高 228）上，三按钮弹窗高度近 190~220，几乎铺满整屏，
+   玩家反馈像一条竖长条。口径：
+     默认（胶囊屏）＝ 150 宽 / 竖向内边距 16 / 按钮 130×40 间距 6；
+     rect（方屏、大屏方表）＝ 160 宽 / 竖向内边距 10 / 按钮 140×34 间距 4
+       —— 宽一点容得下内容、扁一点把高度还给屏幕（三按钮弹窗 ≈ 181 < 228）。
+   数值与 utils/metrics.js 的 MODAL / BTN 一一对应，check-all.py 会核对。 */
+@media screen and (shape: rect) {
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp / 192×471）：选项按钮并排 + 字号 +3~4px ──
+   与 utils/screen.js 的 widePill 对应；手环9（96dp）与方屏不命中。 */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .s-title {
+    font-size: 26px;
+    line-height: 34px;
+  }
+  .chip {
+    flex: 1;
+    height: 36px;
+    line-height: 36px;
+    border-radius: 18px;
+    font-size: 17px;
+    box-sizing: border-box;
+  }
+  .chip-t {
+    line-height: 34px;
+    font-size: 17px;
+    padding-left: 0px;
+    padding-right: 0px;
+    margin-right: 4px;
+    text-align: center;
+  }
+  .chips {
+    width: 168px;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+  .chips-mode {
+    height: 84px;
+  }
+  .chips-size {
+    height: 168px;
+  }
+  .s-start,
+  .s-back {
+    font-size: 17px;
+  }
+  .m-title {
+    font-size: 26px;
+    line-height: 34px;
+  }
+  .m-mode {
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .m-status {
+    font-size: 18px;
+    line-height: 24px;
+  }
+  .m-diff {
+    font-size: 18px;
+    line-height: 24px;
+  }
+  .menu-fab {
+    font-size: 15px;
+    line-height: 32px;
+  }
+  .modal-title {
+    font-size: 21px;
+    line-height: 28px;
+  }
+  .m-btn {
+    font-size: 17px;
+  }
+  /* 抽屉：7 项从单列改为 2 列（每枚 82×38 ≥ 34 触摸下限） */
+  .d-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .d-item {
+    width: 82px;
+    height: 38px;
+    line-height: 38px;
+    border-radius: 19px;
+    font-size: 16px;
+    margin-left: 2px;
+    margin-right: 2px;
+    margin-bottom: 4px;
+  }
+}
+
+
+/* 开局页：次操作行（玩法介绍 / 返回）。胶囊屏仍上下排，方屏改并排。 */
+.s-secondary {
+  width: 168px;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 方屏开局页重构：标题/标签左对齐，模式一行两枚、尺寸一行四枚，次操作并排。
+   胶囊屏仍走上面的单列 168 全宽，不受影响。 */
+@media screen and (shape: rect) {
+  .setup {
+    align-items: flex-start;
+    margin-top: 10px;
+    margin-bottom: 12px;
+  }
+  .s-title {
+    width: 176px;
+    text-align: left;
+    font-size: 20px;
+    line-height: 26px;
+    margin-bottom: 4px;
+  }
+  .s-label {
+    width: 176px;
+    text-align: left;
+    margin-top: 8px;
+    margin-bottom: 4px;
+  }
+  .chips {
+    width: 176px;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0px;
+    margin-bottom: 4px;
+  }
+  .chips-mode,
+  .chips-size {
+    height: 34px;
+  }
+  .chip {
+    height: 34px;
+    line-height: 34px;
+    border-radius: 17px;
+    margin: 0px;
+    box-sizing: border-box;
+  }
+  .chip-mode {
+    width: 84px;
+    padding-left: 0px;
+    padding-right: 0px;
+  }
+  .chip-size {
+    width: 40px;
+    padding-left: 0px;
+    padding-right: 0px;
+    font-size: 11px;
+  }
+  .chip-t {
+    line-height: 32px;
+    font-size: 12px;
+  }
+  .s-start {
+    width: 176px;
+    height: 44px;
+    margin-top: 8px;
+  }
+  .s-secondary {
+    width: 176px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .s-half {
+    width: 84px;
+    margin-top: 8px;
+  }
+}
+
+
+
+
+/* 开始页（仅方屏）：左上返回 / 右侧标题；底部旧「返回」删除，玩法介绍独占一行。
+   对局中不渲染该顶栏，游戏界面仍走抽屉。 */
+.setup-nav {
+  width: 176px;
+  height: 34px;
+  margin-top: 10px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.setup-nav-back {
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  border-width: 0px;
+  font-size: 18px;
+  padding: 0px;
+}
+.setup-nav-title {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 24px;
+}
+@media screen and (shape: rect) {
+  .s-title {
+    display: none;
+  }
+  .s-return {
+    display: none;
+  }
+  .s-intro {
+    width: 176px;
+  }
+}

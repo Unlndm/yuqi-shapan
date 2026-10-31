@@ -1,0 +1,340 @@
+<!--
+  pages/index — 主界面。
+  职责：按「棋类 / 派对 / 拼图 / 推理」四组陈列 19 款玩法（名称 + 玩法短句），
+        顶部是品牌标题与赛季 / 棋币卡，底部是悬浮 tab 坞。
+  排版（2026-10-30 UI 重构）：分组标题 + 卡片列表，卡片高一阶表面 + 发丝线；
+        胶囊屏底部 tab 由「4 行整宽」改为「176×48 悬浮坞」，把 66px 竖向空间还给列表。
+  数据源唯一来自 utils/config.js 的 GAME_TYPES（cat 字段决定分组）。
+  注意：外部 CSS 必须用 <style> 内 @import 引入（style src 写法会被
+  aiot-toolkit 静默忽略，见 TODO.md）。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <div class="title-row">
+      <image class="title-logo" src="/common/img/brand.png"></image>
+      <div class="title-text">
+        <text class="title" style="color:{{t.onSurface}}">驭棋沙盘</text>
+        <text class="title-sub" if="{{!isRect}}" style="color:{{t.onSurfaceVariant}}">棋类 · 拼图 · 推理</text>
+      </div>
+      <!-- 方屏专有：卡片排列切换（双列网格 ↔ 单列大卡）。胶囊屏/宽胶囊不渲染。 -->
+      <div class="title-spacer" if="{{isRect}}"></div>
+      <input type="button" class="title-toggle" if="{{isRect}}"
+             value="{{cardMode === 'grid' ? '列表' : '网格'}}"
+             style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+             @click="toggleCardMode" />
+    </div>
+    <!-- 赛季条 / 玩法分组与卡列表一起放进同一个 scroll：
+         胶囊屏固定区只剩「标题行 + 底部 tab 坞」，向上滚会把赛季卡带走、露出更多玩法。 -->
+    <scroll class="cards" scroll-y="true" bounces="false">
+      <!-- 赛季 / 棋币卡：第一行「第 N 赛季 / 棋币 N ＞」，第二行「状态点 + 今日挑战」。
+           整卡可点进赛季页；底色取 surfaceContainerHigh，比玩法卡高一阶，作为首页的主卡。 -->
+      <div class="season-bar" style="background-color:{{t.primaryContainer}}" @click="openSeason">
+        <div class="season-line">
+          <text class="season-name" style="color:{{t.onPrimaryContainer}}">{{seasonName}}</text>
+          <text class="season-coins" style="color:{{t.onPrimaryContainer}}">{{coins}} 棋币 ＞</text>
+        </div>
+        <div class="season-daily-line">
+          <div class="season-dot" style="background-color:{{dailyColor}}"></div>
+          <text class="season-daily" style="color:{{t.onPrimaryContainer}}">{{dailyText}}</text>
+        </div>
+      </div>
+
+      <!-- 分组：标题行（名称 + 发丝线 + 数量）→ 该组玩法卡。
+           方屏「双列网格」为了把首屏还给卡片，合并成一个无组头的 all 组；
+           方屏「单列大卡」和胶囊屏都按四组陈列。
+           事件参数只传索引（g.gi），不用 $item（本工程未验证该写法）。 -->
+      <div class="group" for="{{(ci, cat) in viewGroups}}">
+        <div class="group-head" if="{{cat.head}}">
+          <text class="group-name" style="color:{{t.onSurface}}">{{cat.name}}</text>
+          <div class="group-rule" style="background-color:{{t.hairline}}"></div>
+          <text class="group-count" style="color:{{t.onSurfaceVariant}}">{{cat.count}}</text>
+        </div>
+        <div class="group-body"
+             style="flex-direction:{{cardsDir}};flex-wrap:{{cardsWrap}};justify-content:{{cardsJust}};align-items:{{cardsAlign}}">
+          <div class="card"
+               for="{{(gi, g) in cat.games}}"
+               style="width:{{cardW}}px;height:{{cardH}}px;margin-bottom:{{cardMB}}px;flex-direction:{{cardDir}};justify-content:{{cardJust}};align-items:{{cardAlign}};padding-left:{{cardPad}}px;padding-right:{{cardPad}}px;background-color:{{t.cardBg}}"
+               @click="openGameIdx(g.gi)">
+            <!-- 棋种徽标：原创 AI 生成位图（禁用棋种为灰度版）。
+                 PNG 本身已挖好透明圆角，CSS 不再加 border-radius（少一层裁剪 = 滚动更稳）。 -->
+            <image class="card-icon" if="{{g.enabled}}"
+                   style="width:{{iconS}}px;height:{{iconS}}px;margin-right:{{iconMR}}px;margin-bottom:{{iconMB}}px"
+                   src="{{g.icon}}"></image>
+            <image class="card-icon icon-dim" if="{{!g.enabled}}"
+                   style="width:{{iconS}}px;height:{{iconS}}px;margin-right:{{iconMR}}px;margin-bottom:{{iconMB}}px"
+                   src="{{g.icon}}"></image>
+            <div class="card-text" style="align-items:{{cardTextAlign}}">
+              <text class="name" style="color:{{g.enabled ? t.onSurface : t.onSurfaceVariant}};font-size:{{nameFs}}px;line-height:{{nameLh}}px">{{g.name}}</text>
+              <text class="card-sub" if="{{g.enabled}}" style="color:{{t.onSurfaceVariant}};font-size:{{subFs}}px">{{g.short}}</text>
+              <text class="tag" if="{{!g.enabled}}" style="color:{{t.onSurfaceVariant}};font-size:{{subFs}}px">需要更大屏幕</text>
+            </div>
+            <!-- 可点提示：单列卡右缘一个细箭头；方屏双列网格里不渲染（没有横向空间） -->
+            <text class="card-chev" if="{{g.enabled && (!isRect || cardMode === 'list')}}"
+                  style="color:{{t.onSurfaceVariant}}">＞</text>
+          </div>
+        </div>
+      </div>
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 底部 tab 坞：胶囊屏是 176×48 悬浮胶囊（底部留 54 避开屏幕半圆），
+         方屏仍是一行四枚整宽。 -->
+    <div class="dock" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="赛季" class="dock-item"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openSeason" />
+      <input type="button" value="闯关" class="dock-item"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openCampaign" />
+      <input type="button" value="战绩" class="dock-item"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openStats" />
+      <input type="button" value="设置" class="dock-item"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openSettings" />
+    </div>
+  </div>
+</template>
+
+<style>
+@import './index.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+/**
+ * 主界面脚本。
+ * 数据源唯一来自 utils/config.js 的 GAME_TYPES（禁止两处各写一份）。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var theme = global.YQ.theme
+var screen = global.YQ.screen
+var economy = global.YQ.economy
+
+// 首页分组（只影响陈列顺序，不改 GAME_TYPES 的原始顺序 —— 每日挑战轮换仍按配置顺序）。
+var HOME_CATS = [
+  { id: 'board', name: '棋类对弈' },
+  { id: 'party', name: '桌面派对' },
+  { id: 'puzzle', name: '益智拼图' },
+  { id: 'solo', name: '探索推理' }
+]
+
+// 输入：无；输出：分组视图模型 [{id,name,count,games:[{gi,name,icon,short,enabled}]}]。
+// 只复制展示字段，事件仍用 gi 回查 config.GAME_TYPES；未配置 cat 的玩法归入「更多玩法」。
+function buildGroups() {
+  var out = []
+  var used = 0
+  for (var c = 0; c < HOME_CATS.length; c++) {
+    var cat = HOME_CATS[c]
+    var games = []
+    for (var i = 0; i < config.GAME_TYPES.length; i++) {
+      var g = config.GAME_TYPES[i]
+      if (g.cat !== cat.id) continue
+      used++
+      games.push({ gi: i, name: g.name, icon: g.icon, short: g.short, enabled: g.enabled })
+    }
+    if (games.length) out.push({ id: cat.id, head: true, name: cat.name, count: games.length, games: games })
+  }
+  if (used < config.GAME_TYPES.length) {
+    var rest = []
+    for (var j = 0; j < config.GAME_TYPES.length; j++) {
+      var r = config.GAME_TYPES[j]
+      var known = false
+      for (var k = 0; k < HOME_CATS.length; k++) if (r.cat === HOME_CATS[k].id) known = true
+      if (!known) rest.push({ gi: j, name: r.name, icon: r.icon, short: r.short, enabled: r.enabled })
+    }
+    if (rest.length) out.push({ id: 'other', head: true, name: '更多玩法', count: rest.length, games: rest })
+  }
+  return out
+}
+
+var HOME_GROUPS = buildGroups()
+// 方屏双列网格：按 GAME_TYPES 原始顺序的「无组头单组」，
+// 既保留旧方屏的浏览顺序，也把首屏高度全部留给卡片。
+var ALL_GAMES = []
+for (var hi = 0; hi < config.GAME_TYPES.length; hi++) {
+  var hg = config.GAME_TYPES[hi]
+  ALL_GAMES.push({ gi: hi, name: hg.name, icon: hg.icon, short: hg.short, enabled: hg.enabled })
+}
+var ALL_GROUP = { id: 'all', head: false, name: '全部玩法', count: ALL_GAMES.length, games: ALL_GAMES }
+
+export default {
+  data: {
+    t: theme.current(),
+    pageH: 490,              // 多屏适配：设计像素页高（screen.getLayout）
+    fz: config.fontTokens('normal'),
+    viewGroups: HOME_GROUPS,
+    seasonName: '第 ' + economy.SEASON_ID + ' 赛季',
+    coins: 0,
+    // 方屏紧凑档：副标题字号（内联绑定绕不过 CSS 媒体查询，按屏型在脚本里收敛）
+    isRect: false,
+    widePill: false,
+    subFs: 11,
+    // 卡片排列（仅方屏可切）：grid = 双列网格（默认）；list = 单列大卡。
+    // 其余布局字段由 applyCardMode() 按「屏型 + 模式」算好，模板内联绑定（不依赖动态 class 绑定）。
+    cardMode: 'grid',
+    cardsDir: 'column', cardsWrap: 'nowrap', cardsJust: 'flex-start', cardsAlign: 'flex-start',
+    cardW: 168, cardH: 58, cardMB: 8, cardDir: 'row', cardJust: 'flex-start', cardAlign: 'center', cardPad: 12,
+    iconS: 32, iconMR: 10, iconMB: 0, nameFs: 16, nameLh: 20, cardTextAlign: 'flex-start',
+    // 今日挑战标记（onShow 读 storage 后替换；三态文案与赛季页一致）
+    dailyText: '今日挑战 · 未完成',
+    dailyColor: theme.current().onSurfaceVariant,
+    dailyDone: false,
+    dailyClaimed: false
+  },
+  onInit() {
+    // 首帧就用「最近一次读到的设置」同步把字号/配色/背景定下来（见 config.applyTheme）：
+    // 否则 data 里的 fz 固定是 normal、配色也可能落后，等异步读回再赋值 → 一次整页重渲染。
+    config.seedTheme(this)
+    var that = this
+    this.fontBump = 0
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.fontBump = cl.fontBump || 0
+      this.pageH = cl.designH
+      this.refreshFonts(cl)   // 已测过一次屏幕：首帧就用真实画布高 + 手环10 字号增量
+    }
+    screen.getLayout().then(function (l) {
+      that.fontBump = l.fontBump || 0
+      that.pageH = l.designH
+      that.refreshFonts(l)
+    })
+    // 卡片排列偏好（仅方屏入口能改；胶囊屏 applyCardMode 会强制回单列整宽）
+    config.getPref('home_cards', 'grid').then(function (v) {
+      if (v === 'list' || v === 'grid') {
+        that.cardMode = v
+        that.applyCardMode()
+      }
+    })
+  },
+  // 输入：screen 布局；输出：无。按当前字号档位 + 手环10 增量重算内联字号与副标题字号。
+  refreshFonts(l) {
+    var s = config.cachedSettings()
+    this.fz = config.fontTokens(s ? s.fontSize : 'normal', this.fontBump)
+    this.applyRect(l)
+  },
+  // 输入：screen.getLayout 结果；输出：无。方屏副标题 11 → 9（胶囊屏跟随用户字号档）
+  applyRect(l) {
+    this.isRect = !!l && l.profile === 'rect'
+    this.widePill = !!l && !!l.widePill
+    this.subFs = this.isRect ? 9 : (this.fz && this.fz.sm ? this.fz.sm : 11)
+    this.applyCardMode()
+  },
+  // 输入：无；输出：无。按「屏型 + cardMode」算出卡片布局的内联值。
+  // 为什么全部用内联绑定而不是动态 class：本工程未验证动态 class 绑定；
+  // 胶囊屏的值必须与既有 CSS 完全一致，否则会覆盖坏（宽胶囊的名字字号也要跟上）。
+  applyCardMode() {
+    // 方屏双列网格用「无组头的 all 组」；单列 / 胶囊屏用四组（带组头）
+    var vg = (this.isRect && this.cardMode === 'grid') ? ALL_GROUP : HOME_GROUPS
+    if (this.viewGroups !== vg) this.viewGroups = vg
+    if (!this.isRect) {
+      // 胶囊屏（含宽胶囊）：整宽单列，卡片 58 高；宽胶囊放大图标与字号
+      this.cardsDir = 'column'; this.cardsWrap = 'nowrap'
+      this.cardsJust = 'flex-start'; this.cardsAlign = 'flex-start'
+      this.cardW = 168; this.cardH = this.widePill ? 62 : 58; this.cardMB = 8
+      this.cardDir = 'row'; this.cardJust = 'flex-start'; this.cardAlign = 'center'
+      this.cardPad = this.widePill ? 10 : 12
+      this.iconS = this.widePill ? 30 : 32; this.iconMR = this.widePill ? 8 : 10; this.iconMB = 0
+      this.nameFs = this.widePill ? 18 : 16
+      this.nameLh = this.widePill ? 22 : 20
+      this.cardTextAlign = 'flex-start'
+      return
+    }
+    if (this.cardMode === 'list') {
+      // 单列大卡：176×56，横向「图标 + 名称/副标题」，一屏约 3 张
+      this.cardsDir = 'column'; this.cardsWrap = 'nowrap'
+      this.cardsJust = 'flex-start'; this.cardsAlign = 'flex-start'
+      this.cardW = 176; this.cardH = 56; this.cardMB = 8
+      this.cardDir = 'row'; this.cardJust = 'flex-start'; this.cardAlign = 'center'; this.cardPad = 12
+      this.iconS = 30; this.iconMR = 10; this.iconMB = 0
+      this.nameFs = 14; this.nameLh = 18
+      this.cardTextAlign = 'flex-start'
+      return
+    }
+    // 双列网格：85×85，图标在上、文字居中，一屏约 4 张（与旧方屏排版一致）
+    this.cardsDir = 'row'; this.cardsWrap = 'wrap'
+    this.cardsJust = 'space-between'; this.cardsAlign = 'flex-start'
+    this.cardW = 85; this.cardH = 85; this.cardMB = 8
+    this.cardDir = 'column'; this.cardJust = 'center'; this.cardAlign = 'center'; this.cardPad = 0
+    this.iconS = 26; this.iconMR = 0; this.iconMB = 4
+    this.nameFs = 12; this.nameLh = 16
+    this.cardTextAlign = 'center'
+  },
+  // 输入：无；输出：无。方屏专用：双列网格 ↔ 单列大卡，偏好落盘。
+  toggleCardMode() {
+    if (!this.isRect) return
+    this.cardMode = this.cardMode === 'grid' ? 'list' : 'grid'
+    this.applyCardMode()
+    config.saveSetting('home_cards', this.cardMode)
+  },
+  // onShow 刷新主题与字体档位，使设置页改完返回后立即生效。
+  // 判重交给 config.applyTheme：主题没变时**一个绑定都不碰**，不会触发重渲染，
+  // 更不会重绑整页配色（重绑会让整页重新渲染 → 就是玩家看到的「一闪」）。
+  onShow() {
+    var that = this
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)
+      that.subFs = that.isRect ? 9 : that.fz.sm
+    })
+    // 棋币条：每次回主页刷新（对局结算 / 商店购买后立即可见）
+    economy.load().then(function (st) {
+      that.coins = st.coins
+      that.seasonName = '第 ' + economy.SEASON_ID + ' 赛季'
+    })
+    // 今日挑战标记：启用玩法清单与赛季页/对局路由共用同一口径
+    economy.loadDaily(this.dailyGameIds()).then(function (d) {
+      var v = that.dailyOf(d)
+      that.dailyDone = v.done
+      that.dailyClaimed = v.claimed
+      that.dailyText = v.text
+      that.dailyColor = v.color
+    })
+  },
+  // 输入：无；输出：当前启用的玩法 id 数组（每日轮换用，与赛季页一致）
+  dailyGameIds() {
+    var ids = []
+    for (var i = 0; i < config.GAME_TYPES.length; i++) {
+      if (config.GAME_TYPES[i].enabled) ids.push(config.GAME_TYPES[i].id)
+    }
+    return ids
+  },
+  // 输入：每日状态；输出：{done, claimed, text, color}（三态与赛季页 dailyOf 一致）
+  dailyOf(d) {
+    var claimed = !!(d && d.rewardClaimed === true)
+    var done = !!(d && d.completed === true)
+    return {
+      done: done,
+      claimed: claimed,
+      text: '今日挑战 · ' + (claimed ? '已完成' : (done ? '可领取' : '未完成')),
+      color: claimed ? this.t.resultWin : (done ? this.t.primary : this.t.onSurfaceVariant)
+    }
+  },
+  // 输入：棋种索引（分组视图里带原始 gi，事件参数只传索引）；输出：无。
+  openGameIdx(gi) {
+    this.openGame(config.GAME_TYPES[gi])
+  },
+  // 输入：棋种对象；输出：无。置灰棋种点击无响应；带 page 字段的玩法走专属页面。
+  openGame(item) {
+    if (!item || !item.enabled) return
+    if (item.page) {
+      router.push({ uri: item.page })
+      return
+    }
+    router.push({ uri: 'pages/game', params: { type: item.id } })
+  },
+  openSettings() {
+    router.push({ uri: 'pages/settings' })
+  },
+  openStats() {
+    router.push({ uri: 'pages/stats' })
+  },
+  openSeason() {
+    router.push({ uri: 'pages/season' })
+  },
+  openCampaign() {
+    router.push({ uri: 'pages/campaign' })
+  }
+}
+</script>

@@ -1,0 +1,321 @@
+<!--
+  pages/settings — 设置页。
+  设计：MD3 设置列表——单行行（标签居左 + 开关居右）+ 分段控件
+  （segmented：整条圆角容器，选中段填充 primaryContainer）。
+  数据驱动 rows（key/stg/options+sel），每项改动立即落盘。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">设置</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" scroll-y="true" bounces="true">
+      <!-- 震动反馈：单行 标签 + 开关 -->
+      <div class="srow" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="slabel" style="color:{{t.onSurface}};font-size:{{fz.md}}px">震动反馈</text>
+        <div class="toggle" style="background-color:{{s.vibrate ? t.primaryContainer : t.surfaceContainerHigh}}"
+             @click="toggleVibrate">
+          <div class="knob" style="margin-left:{{s.vibrate ? 22 : 4}}px;background-color:{{s.vibrate ? t.primary : t.outline}}"></div>
+        </div>
+      </div>
+
+      <!-- 分段控件行：标签在上，整条分段控件在下 -->
+      <div class="sgroup" for="{{(ri, row) in rows}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="slabel" style="color:{{t.onSurface}};font-size:{{fz.md}}px">{{row.label}}</text>
+        <text class="seg-note" if="{{row.note}}" style="color:{{t.onSurfaceVariant}}">{{row.note}}</text>
+        <div class="seg" if="{{row.kind !== 'grid'}}">
+          <text class="seg-item" for="{{(ci, o) in row.options}}"
+                style="background-color:{{o.sel ? t.primaryContainer : 'transparent'}};color:{{o.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}"
+                @click="pick(ri, ci)">{{o.n}}</text>
+        </div>
+        <!-- 配色：5 套选项用可换行 chip 网格（3+2），并显示未解锁的价格 -->
+        <div class="seg-grid" if="{{row.kind === 'grid'}}">
+          <div class="seg-chip" for="{{(ci, o) in row.options}}"
+               style="background-color:{{o.sel ? t.primaryContainer : 'transparent'}}"
+               @click="pick(ri, ci)">
+            <text class="chip-name" style="color:{{o.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{o.n}}</text>
+            <text class="chip-price" if="{{o.locked}}" style="color:{{o.sel ? t.onPrimaryContainer : t.onSurfaceVariant}}">{{o.price}} 币</text>
+          </div>
+        </div>
+      </div>
+
+      <!-- 皮肤 / 外观：入口跳赛季页（购买、装备、持久化都在那边，避免两处各写一套商店逻辑） -->
+      <div class="sgroup" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="slabel" style="color:{{t.onSurface}};font-size:{{fz.md}}px">皮肤 / 外观</text>
+        <text class="skin-hint" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">棋盘底材 · 骰面 · 棋子描边 · 页面背景</text>
+        <input type="button" class="skin-entry" value="前往赛季商店选择"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="openSeason" />
+      </div>
+
+      <!-- 清空对局记录：二次确认，3 秒未确认自动复位 -->
+      <input type="button" class="btn-danger" value="{{clearArmed ? '再点一次确认清空' : '清空对局记录'}}"
+             style="color:{{clearArmed ? t.surface : t.error}};background-color:{{clearArmed ? t.error : t.surface}};border-color:{{t.error}}"
+             @click="onClear" />
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 配色解锁确认（用棋币购买；解锁后永久保留） -->
+    <div class="modal-mask" if="{{dlg === 'unlock'}}" style="height:{{pageH}}px" @click="closeDlg">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}" @click="noop">
+        <text class="modal-title" style="color:{{t.onSurface}}">解锁 {{buyName}}</text>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">花费 {{buyPrice}} 棋币 · 余额 {{coins}}</text>
+        <input type="button" class="m-btn" value="解 锁"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="confirmUnlock" />
+        <input type="button" class="m-btn" value="取 消"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+               @click="closeDlg" />
+      </div>
+    </div>
+
+    <div class="dock dock-2" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="玩法" class="dock-item dock-wide"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openHelp" />
+      <input type="button" value="关于" class="dock-item dock-wide"
+             style="color:{{t.onSurface}};background-color:transparent"
+             @click="openAbout" />
+    </div>
+  </div>
+</template>
+
+<style>
+@import './settings.css';
+@import '../../common/ui.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+/**
+ * 设置页脚本。
+ * rows 为数据驱动的分段控件行；stg 为 storage key（config 统一加 chess_ 前缀）。
+ * 选中态预计算为 option.sel 布尔（模板只用简单绑定）。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var screen = global.YQ.screen
+var haptic = global.YQ.haptic
+var economy = global.YQ.economy
+var toastMod = global.YQ.toast
+
+// 输入：源对象、key、value；输出：新对象（浅拷贝替换，保证框架检测到 data 变更）。
+function merge(base, key, value) {
+  var o = {}
+  for (var p in base) o[p] = base[p]
+  o[key] = value
+  return o
+}
+
+// 内部：按 settings 值刷新 rows 中各 option.sel 标志。
+function syncSel(rows, s) {
+  for (var i = 0; i < rows.length; i++) {
+    var cur = s[rows[i].key]
+    for (var k = 0; k < rows[i].options.length; k++) {
+      rows[i].options[k].sel = rows[i].options[k].v === cur
+    }
+  }
+  return rows
+}
+
+// 内部：配色行 = 5 套（3 免费 + 2 解锁），用 chip 网格展示未解锁价格。
+function baseRows() {
+  return [
+    {
+      key: 'aiLevel', stg: 'ai_level', label: '对手强度',
+      note: '自动 = 按最近战绩匹配',
+      options: [
+        { v: 'auto', n: '自动' }, { v: 'easy', n: '简单' },
+        { v: 'normal', n: '普通' }, { v: 'hard', n: '困难' }
+      ]
+    },
+    {
+      key: 'vibrateLevel', stg: 'vibrate_level', label: '落子震动强度',
+      options: [{ v: 'weak', n: '弱' }, { v: 'normal', n: '中' }, { v: 'strong', n: '强' }]
+    },
+    {
+      key: 'theme', stg: 'theme', label: '深色 / 浅色',
+      options: [{ v: 'dark', n: '深色' }, { v: 'light', n: '浅色' }]
+    },
+    {
+      key: 'palette', stg: 'palette', label: '配色风格（MD3）', kind: 'grid',
+      options: [
+        { v: 'purple', n: '经典紫' }, { v: 'green', n: '静谧绿' }, { v: 'blue', n: '深海蓝' },
+        { v: 'amber', n: '琥珀', price: economy.PALETTE_PRICES.amber },
+        { v: 'rose', n: '绯红', price: economy.PALETTE_PRICES.rose }
+      ]
+    },
+    {
+      key: 'fontSize', stg: 'font_size', label: '字体大小',
+      options: [{ v: 'normal', n: '标准' }, { v: 'large', n: '大' }, { v: 'xlarge', n: '特大' }]
+    }
+  ]
+}
+
+// 内部：按已解锁列表刷新配色 option.locked。
+function syncLocks(rows, palettes) {
+  var list = palettes || []
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].key !== 'palette') continue
+    for (var k = 0; k < rows[i].options.length; k++) {
+      var o = rows[i].options[k]
+      o.locked = o.price !== undefined && list.indexOf(o.v) < 0
+    }
+  }
+  return rows
+}
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,
+    fz: config.fontTokens('normal'),
+    s: config.DEFAULT_SETTINGS,
+    clearArmed: false,
+    coins: 0,
+    dlg: '',
+    buyId: '',
+    buyName: '',
+    buyPrice: 0,
+    rows: syncLocks(syncSel(baseRows(), config.DEFAULT_SETTINGS), ['purple', 'green', 'blue'])
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色/字号（避免进页后闪一下）
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+    })
+    Promise.all([
+      config.loadSettings(),
+      economy.load()
+    ]).then(function (vals) {
+      var s = vals[0]
+      var eco = vals[1]
+      // 脏数据兜底：保存的配色若不在已解锁列表里（旧档/改档），回退经典紫
+      if (eco.palettes.indexOf(s.palette) < 0) {
+        s = merge(s, 'palette', 'purple')
+        config.saveSetting('palette', 'purple')
+      }
+      that.s = s
+      that.coins = eco.coins
+      that.rows = syncLocks(syncSel(that.rows, s), eco.palettes)
+      config.rememberSettings(s)
+      config.applyTheme(that, s)   // 判重：没改主题就不重设背景图（<image> 换 src 会闪空白帧）
+      haptic.applySettings(s)
+    })
+  },
+
+  onDestroy() {
+    if (this.clearTimer) {
+      clearTimeout(this.clearTimer)
+      this.clearTimer = null
+    }
+  },
+
+  // 输入：行下标 ri、选项下标 ci；输出：无。立即落盘，主题/配色/字体即时生效。
+  pick(ri, ci) {
+    var row = this.rows[ri]
+    var o = row.options[ci]
+    if (!o) return
+    // 未解锁的配色：先弹购买确认，不直接切换
+    if (o.locked) {
+      this.buyId = o.v
+      this.buyName = o.n
+      this.buyPrice = o.price
+      this.dlg = 'unlock'
+      return
+    }
+    if (this.s[row.key] === o.v) return
+    this.s = merge(this.s, row.key, o.v)
+    this.rows = syncSel(this.rows, this.s)
+    config.saveSetting(row.stg, o.v)
+    // 任何设置改动都刷新同步快照：对局页 / 主页下次 seedTheme 首帧就能拿到新值
+    //（对手强度也靠这份快照在 matchDifficulty 里立即生效）。
+    config.rememberSettings(this.s)
+    haptic.applySettings(this.s)
+    if (row.key === 'theme' || row.key === 'palette' || row.key === 'fontSize') {
+      // 先 remember（pageBg 依赖配色 / 深浅 / 皮肤），再一次性套用三个绑定值：
+      // 不 remember 会导致「文字换了主题、背景图还是旧的」；分两次赋值会有中间态帧。
+      config.applyTheme(this, this.s)
+    }
+  },
+
+  // 解锁配色：扣棋币 → 标记已解锁 → 自动切到该配色
+  confirmUnlock() {
+    var that = this
+    var id = this.buyId
+    this.dlg = ''
+    economy.unlockPalette(id).then(function (r) {
+      if (!r.ok) {
+        toastMod.toast(r.reason === 'poor' ? '棋币不足 · 再去下几局' : '这分配色已解锁')
+        return
+      }
+      that.coins = r.coins
+      that.rows = syncLocks(syncSel(that.rows, merge(that.s, 'palette', id)), r.palettes)
+      that.s = merge(that.s, 'palette', id)
+      config.saveSetting('palette', id)
+      config.rememberSettings(that.s)
+      config.applyTheme(that, that.s)
+      toastMod.toast('已解锁 · ' + that.buyName + ' · 剩余 ' + r.coins + ' 棋币')
+    })
+  },
+
+  closeDlg() {
+    this.dlg = ''
+  },
+
+  noop() {},
+
+  toggleVibrate() {
+    var v = !this.s.vibrate
+    this.s = merge(this.s, 'vibrate', v)
+    config.saveSetting('vibrate', v)
+    haptic.applySettings(this.s)
+  },
+
+  // 二次确认：第一次点击进入待确认态，3 秒内再点执行清空。
+  onClear() {
+    var that = this
+    if (!this.clearArmed) {
+      this.clearArmed = true
+      if (this.clearTimer) clearTimeout(this.clearTimer)
+      this.clearTimer = setTimeout(function () {
+        that.clearArmed = false
+        that.clearTimer = null
+      }, 3000)
+      return
+    }
+    if (this.clearTimer) {
+      clearTimeout(this.clearTimer)
+      this.clearTimer = null
+    }
+    this.clearArmed = false
+    config.clearRecords()
+  },
+
+  openHelp() {
+    router.push({ uri: 'pages/help' })
+  },
+
+  // 皮肤 / 外观入口：购买与装备统一在赛季页完成
+  openSeason() {
+    router.push({ uri: 'pages/season' })
+  },
+
+  openAbout() {
+    router.push({ uri: 'pages/about' })
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

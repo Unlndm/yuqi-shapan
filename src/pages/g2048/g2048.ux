@@ -1,0 +1,572 @@
+<!--
+  pages/g2048 — 2048 小游戏页（4×4）。
+  职责：渲染棋盘 + 四个方向键 + 分数/最高分，驱动规则层（rules/g2048.js）并做演出。
+  规则逻辑全部在 rules/g2048.js（纯数据 + 随机数可注入）；页面只管：驱动移动、尺寸微脉冲、弹窗、震动。
+  渲染约定（本平台约束）：
+    · 棋盘用 **16 个固定 <text> 节点**，逐格各自的字段绑定（k0..k15），**不用 for 循环渲染**——
+      该平台实测循环模板 + 动态索引会漏刷且重建开销大。
+    · 方向输入用**四个方向按钮**组成的十字键，不自绘 swipe/drag —— 自绘触摸会吞掉系统侧滑返回手势。
+    · 所有按钮显式内联 background-color 与 border-color（本工程要求）；样式其余静态部分写进 g2048.css。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏（全应用统一口径）：圆形返回键「＜」+ 右侧两行状态（主数值 / 记录） -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{fz.md}}px">分 {{score}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">最高 {{best}} · 滑动</text>
+      </div>
+    </div>
+
+    <!-- 棋盘：16 个固定格子节点，各自字段绑定（值没变时脚本不写，减少无谓更新） -->
+    <div class="board" style="left:{{bx}}px;top:{{by}}px;width:{{bs}}px;height:{{bs}}px;background-color:{{boardBg}};border-color:{{t.outline}}"
+         @touchstart="onTouchStart" @touchend="onTouchEnd" @touchmove="noop">
+      <text class="tile" style="left:{{k0.l}}px;top:{{k0.t}}px;width:{{k0.w}}px;height:{{k0.w}}px;background-color:{{k0.bg}};color:{{k0.fg}};font-size:{{k0.fs}}px;line-height:{{k0.lh}}px">{{k0.v}}</text>
+      <text class="tile" style="left:{{k1.l}}px;top:{{k1.t}}px;width:{{k1.w}}px;height:{{k1.w}}px;background-color:{{k1.bg}};color:{{k1.fg}};font-size:{{k1.fs}}px;line-height:{{k1.lh}}px">{{k1.v}}</text>
+      <text class="tile" style="left:{{k2.l}}px;top:{{k2.t}}px;width:{{k2.w}}px;height:{{k2.w}}px;background-color:{{k2.bg}};color:{{k2.fg}};font-size:{{k2.fs}}px;line-height:{{k2.lh}}px">{{k2.v}}</text>
+      <text class="tile" style="left:{{k3.l}}px;top:{{k3.t}}px;width:{{k3.w}}px;height:{{k3.w}}px;background-color:{{k3.bg}};color:{{k3.fg}};font-size:{{k3.fs}}px;line-height:{{k3.lh}}px">{{k3.v}}</text>
+      <text class="tile" style="left:{{k4.l}}px;top:{{k4.t}}px;width:{{k4.w}}px;height:{{k4.w}}px;background-color:{{k4.bg}};color:{{k4.fg}};font-size:{{k4.fs}}px;line-height:{{k4.lh}}px">{{k4.v}}</text>
+      <text class="tile" style="left:{{k5.l}}px;top:{{k5.t}}px;width:{{k5.w}}px;height:{{k5.w}}px;background-color:{{k5.bg}};color:{{k5.fg}};font-size:{{k5.fs}}px;line-height:{{k5.lh}}px">{{k5.v}}</text>
+      <text class="tile" style="left:{{k6.l}}px;top:{{k6.t}}px;width:{{k6.w}}px;height:{{k6.w}}px;background-color:{{k6.bg}};color:{{k6.fg}};font-size:{{k6.fs}}px;line-height:{{k6.lh}}px">{{k6.v}}</text>
+      <text class="tile" style="left:{{k7.l}}px;top:{{k7.t}}px;width:{{k7.w}}px;height:{{k7.w}}px;background-color:{{k7.bg}};color:{{k7.fg}};font-size:{{k7.fs}}px;line-height:{{k7.lh}}px">{{k7.v}}</text>
+      <text class="tile" style="left:{{k8.l}}px;top:{{k8.t}}px;width:{{k8.w}}px;height:{{k8.w}}px;background-color:{{k8.bg}};color:{{k8.fg}};font-size:{{k8.fs}}px;line-height:{{k8.lh}}px">{{k8.v}}</text>
+      <!-- 3×3 档只用前 9 格（k0~k8），多余节点不渲染（0 尺寸 div 仍会画 1px 描边，故用 if 彻底隐藏） -->
+      <block if="{{size === 4}}">
+      <text class="tile" style="left:{{k9.l}}px;top:{{k9.t}}px;width:{{k9.w}}px;height:{{k9.w}}px;background-color:{{k9.bg}};color:{{k9.fg}};font-size:{{k9.fs}}px;line-height:{{k9.lh}}px">{{k9.v}}</text>
+      <text class="tile" style="left:{{k10.l}}px;top:{{k10.t}}px;width:{{k10.w}}px;height:{{k10.w}}px;background-color:{{k10.bg}};color:{{k10.fg}};font-size:{{k10.fs}}px;line-height:{{k10.lh}}px">{{k10.v}}</text>
+      <text class="tile" style="left:{{k11.l}}px;top:{{k11.t}}px;width:{{k11.w}}px;height:{{k11.w}}px;background-color:{{k11.bg}};color:{{k11.fg}};font-size:{{k11.fs}}px;line-height:{{k11.lh}}px">{{k11.v}}</text>
+      <text class="tile" style="left:{{k12.l}}px;top:{{k12.t}}px;width:{{k12.w}}px;height:{{k12.w}}px;background-color:{{k12.bg}};color:{{k12.fg}};font-size:{{k12.fs}}px;line-height:{{k12.lh}}px">{{k12.v}}</text>
+      <text class="tile" style="left:{{k13.l}}px;top:{{k13.t}}px;width:{{k13.w}}px;height:{{k13.w}}px;background-color:{{k13.bg}};color:{{k13.fg}};font-size:{{k13.fs}}px;line-height:{{k13.lh}}px">{{k13.v}}</text>
+      <text class="tile" style="left:{{k14.l}}px;top:{{k14.t}}px;width:{{k14.w}}px;height:{{k14.w}}px;background-color:{{k14.bg}};color:{{k14.fg}};font-size:{{k14.fs}}px;line-height:{{k14.lh}}px">{{k14.v}}</text>
+      <text class="tile" style="left:{{k15.l}}px;top:{{k15.t}}px;width:{{k15.w}}px;height:{{k15.w}}px;background-color:{{k15.bg}};color:{{k15.fg}};font-size:{{k15.fs}}px;line-height:{{k15.lh}}px">{{k15.v}}</text>
+      </block>
+    </div>
+
+    <!-- 十字方向键（或矮画布的一行四键）+ 正下方并排两枚：新局 / 档位 -->
+    <div class="pad" style="left:{{padL}}px;top:{{padT}}px;width:{{padW}}px;height:{{padH}}px">
+      <input type="button" class="ngbtn" value="新局"
+             style="left:{{ngL}}px;top:{{ngT}}px;width:{{newW}}px;height:{{newH}}px;font-size:{{sf}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+             @click="newGame" />
+      <!-- 档位切换（3×3 简单档 / 4×4 标准档）：按钮上显示当前档位，点了切到另一档并开新局 -->
+      <input type="button" class="szbtn" value="{{sizeLabel}}"
+             style="left:{{szL}}px;top:{{szT}}px;width:{{szW}}px;height:{{szH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="tapSize" />
+    </div>
+
+    <!-- 弹窗（同一时刻只弹一个：dlg 单字段驱动） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <!-- 达成（4×4 是 2048、3×3 是 256）：可选继续玩（规则层 won 达成后不会再结束流程） -->
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">达成 {{winTile}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">本局 {{score}} 分，还想冲更高吗？</text>
+          <input type="button" class="m-btn" value="继续玩"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="continuePlay" />
+        </block>
+        <!-- 无路可走：终局 -->
+        <block if="{{dlg === 'over'}}">
+          <text class="modal-title" style="color:{{t.resultLose}}">无路可走</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">本局得分 {{score}} · 最高 {{best}}</text>
+          <text class="modal-sub" if="{{campaignNote}}" style="color:{{t.primary}}">{{campaignNote}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="newGame" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+        <!-- 切档确认（防误触丢掉正在进行的这局） -->
+        <block if="{{dlg === 'size'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">切到 {{nextSizeLabel}}？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">当前这局会重开，{{score}} 分不保留</text>
+          <input type="button" class="m-btn" value="切 换"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="confirmSize" />
+          <input type="button" class="m-btn" value="取 消"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="cancelSize" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './g2048.css';
+</style>
+
+<script>
+/**
+ * 2048 页脚本。
+ * 规则状态在 this.st（rules/g2048.js 产出的纯数据）；页面只做「驱动 + 演出」。
+ * 最高分用 @system.storage（经 utils/config 的 pref 接口）持久化，键 g2048_best。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var g2048Factory = require('../../rules/g2048.js')
+var economy = global.YQ.economy
+var rng = global.YQ.rng
+
+// 棋盘固有色（不随主题切换，对齐经典 2048 观感；面色越暖越深、文字对比度足够）
+var BOARD_BG = '#BBADA0'
+var SLOT_BG = '#CDC1B4'
+var SLOT_FG = '#776E65'
+var GRID_GAP = 3           // 格间缝（玩家要求 3px）
+
+// 输入：格值；输出：{bg, fg}。0/空位用浅槽色，越大越暖越深、文字转浅。
+function tileLook(v) {
+  switch (v) {
+    case 2: return { bg: '#EEE4DA', fg: '#776E65' }
+    case 4: return { bg: '#EDE0C8', fg: '#776E65' }
+    case 8: return { bg: '#F2B179', fg: '#FFFFFF' }
+    case 16: return { bg: '#F59563', fg: '#FFFFFF' }
+    case 32: return { bg: '#F67C5F', fg: '#FFFFFF' }
+    case 64: return { bg: '#F65E3B', fg: '#FFFFFF' }
+    case 128: return { bg: '#EDCF72', fg: '#FFFFFF' }
+    case 256: return { bg: '#EDCC61', fg: '#FFFFFF' }
+    case 512: return { bg: '#EDC850', fg: '#FFFFFF' }
+    case 1024: return { bg: '#EDC53F', fg: '#FFFFFF' }
+    case 2048: return { bg: '#EDC22E', fg: '#FFFFFF' }
+  }
+  if (v > 2048) return { bg: '#3C3A32', fg: '#FFFFFF' }
+  return { bg: SLOT_BG, fg: SLOT_FG }
+}
+
+// 输入：格号（0~15）；输出：首帧占位（大屏 192×490 下格 41/缝 3 的合理位置，布局算完即被覆盖）。
+function defTile(i) {
+  var col = i % 4
+  var row = Math.floor(i / 4)
+  return { l: col * 44, t: row * 44, w: 41, v: '', bg: SLOT_BG, fg: SLOT_FG, fs: 16, lh: 41 }
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    isPill: true,
+    score: 0,
+    best: 0,
+    campaignNote: '',
+    dlg: '',
+    boardBg: BOARD_BG,
+    bx: 9, by: 113, bs: 175,
+    padX: 8, topY: 4, topH: 44, hudW: 176, sf: 12, navSize: 44, navFont: 20, navR: 22,
+    fz: config.fontTokens('normal'),
+    padL: 47, padT: 296, padW: 98, padH: 130, btn: 30, gapD: 4,
+    upL: 34, upT: 0, lfL: 0, lfT: 34, rtL: 68, rtT: 34, dnL: 34, dnT: 68,
+    ngL: 0, ngT: 102, newW: 47, newH: 28,
+    // 档位（3×3 简单档 / 4×4 标准档）与档位按钮：首帧占位，layout 每次重算
+    size: 4, winTile: 2048, sizeLabel: '4×4', nextSizeLabel: '3×3',
+    szL: 51, szT: 102, szW: 47, szH: 28,
+    k0: defTile(0), k1: defTile(1), k2: defTile(2), k3: defTile(3),
+    k4: defTile(4), k5: defTile(5), k6: defTile(6), k7: defTile(7),
+    k8: defTile(8), k9: defTile(9), k10: defTile(10), k11: defTile(11),
+    k12: defTile(12), k13: defTile(13), k14: defTile(14), k15: defTile(15)
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    this.timers = []
+    this.celebrated = false          // 本局是否已弹过「达成」弹窗
+    this.cell = 41
+    this.n = 4
+    this.gap = GRID_GAP
+    this.gx = []
+    this.gy = []
+    this.score = 0
+    this.best = 0
+    // 每日挑战：种子驱动新块落点/数值；普通局不创建 RNG（randPair 返回 undefined → Math.random）
+    this.isChallenge = Number(this.challenge) === 1
+    // 闯关模式：固定 4×4 档，结束一局即结算
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'g2048')
+      this.dailyRng = rng.create(seedNum)
+    }
+    var that = this
+    // 档位与「各档独立最高分」都从存储恢复：4×4 沿用旧键 g2048_best（不迁移），3×3 用 g2048_best_3
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('g2048_size', 4),
+      config.getPref('g2048_best', 0),
+      config.getPref('g2048_best_3', 0)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.size = (that.isChallenge || that.isCampaign) ? 4 : (vals[1] === 3 ? 3 : 4)
+      that.bestMap = {
+        3: typeof vals[3] === 'number' && vals[3] > 0 ? vals[3] : 0,
+        4: typeof vals[2] === 'number' && vals[2] > 0 ? vals[2] : 0
+      }
+      that.best = that.bestMap[that.size]
+      that.g = g2048Factory.create(that.size)
+      that.st = that.g.newGame(that.randPair())
+      that.winTile = that.g.WIN_TILE
+      that.syncSizeLabels()
+      that.layout()
+      that.syncScore()
+      that.syncTiles([])
+    })
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)   // 判重：没换主题/字号就不重设配色绑定（重绑整页 = 闪）
+      haptic.applySettings(s)
+    })
+  },
+
+  // 输入：无；输出：规则层 rand（挑战 = 种子派生的 [落点, 数值]；普通 = undefined → Math.random）。
+  randPair() {
+    return this.dailyRng ? [this.dailyRng.next(), this.dailyRng.next()] : undefined
+  },
+
+  // 档位文案：「当前档」显示在档位按钮上，「要切到的档」显示在切档确认弹窗标题里
+  syncSizeLabels() {
+    this.sizeLabel = this.size === 3 ? '3×3' : '4×4'
+    this.nextSizeLabel = this.size === 3 ? '4×4' : '3×3'
+  },
+
+  // 输入：档位；输出：该档的最高分存储键（4×4 沿用旧键，避免老玩家纪录丢失）
+  bestKey(s) {
+    return s === 4 ? 'g2048_best' : 'g2048_best_3'
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() { screen.keepScreenOn(true) },
+  onHide() { screen.keepScreenOn(false) },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimers()
+    this.timers = null
+  },
+
+  // 手势模式：侧滑返回一律吞掉，避免滑动棋盘时误触退出；退出只走左上角返回键。
+  onBackPress() {
+    if (this.dlg !== '') { this.dlg = ''; return true }
+    return true
+  },
+
+  // 触摸手势：水平/垂直位移超过 24 设计像素才判定，避免轻点被误判成滑动。
+  onTouchStart(e) {
+    var t = e && e.touches && e.touches[0]
+    if (!t) return
+    this.touchX = (t.clientX !== undefined) ? t.clientX : t.x
+    this.touchY = (t.clientY !== undefined) ? t.clientY : t.y
+  },
+
+  onTouchEnd(e) {
+    var t = e && e.changedTouches && e.changedTouches[0]
+    if (!t || this.touchX === undefined) return
+    var x = (t.clientX !== undefined) ? t.clientX : t.x
+    var y = (t.clientY !== undefined) ? t.clientY : t.y
+    var dx = x - this.touchX
+    var dy = y - this.touchY
+    this.touchX = undefined
+    this.touchY = undefined
+    var ax = dx < 0 ? -dx : dx
+    var ay = dy < 0 ? -dy : dy
+    if (ax < 24 && ay < 24) return
+    if (ax > ay) {
+      if (dx > 0) this.moveRight()
+      else this.moveLeft()
+    } else {
+      if (dy > 0) this.moveDown()
+      else this.moveUp()
+    }
+  },
+
+  // 本页所有延时都走自持定时器数组，离屏/销毁时统一清空，避免裸 setTimeout 常驻。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 由画布高反推：先扣掉顶栏与控制区、再留底部余量，其余全给正方形棋盘；
+  // 棋盘边长 = 4×格 + 3×缝，格随余量收敛。
+  // 控制区两套排法（同一批元素，只改坐标，模板不变）：
+  //   高画布（胶囊屏，designH ≥400）：十字方向键 + 正下方并排「新局 / 档位」；
+  //   矮画布（designH < 400，含方屏 / 大屏方表）：十字要占竖向 ≈100px，会把棋盘挤到
+  //   格宽 11px（数字被 1px 裁切），故改为「方向键一行 + 并排「新局 / 档位」」，竖向只占 ≈50px。
+  layout() {
+    var uiS = this.uiS || 1
+    // 矮画布阈值与 utils/screen.js 的 compact 口径对齐（designH < 400）：
+    // 胶囊屏抬了顶栏（58）后，340~400 这一段画布也必须走「方向键一行」的矮排法，
+    // 否则十字键（130）＋抬高的顶栏会把棋盘挤到格宽 25px（复算：355 画布 25 → 41）。
+    var compact = this.pageH < 400
+    var btn = compact ? 24 : Math.max(24, Math.round(30 * uiS))
+    // 胶囊屏（跑道屏）顶部安全区：短边是半圆，外接圆半径 R ≈ 屏宽/2 = 96 设计像素，
+    // 在高度 y 处可见区左边界 xmin = R − √(R² − (R − y)²)。顶栏最左件是「返回」按钮（左沿 x=8），
+    // 代入得 y ≥ 57.6 → 取 58（⚠️ 真机截图取证：顶部浮层按 y≈2 放置会被屏幕圆角切掉）。
+    // 高画布上棋盘受宽度限制（cell 由 176 宽反推），抬顶栏不吃棋盘空间；矮画布见下方复算。
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    // 顶栏高度 = 圆形返回键边长（全应用统一口径，见 utils/metrics.js）：返回键是顶栏里最高的件
+    var navG = metrics.nav(uiS, compact)
+    var topH = navG.size
+    var gapD = compact ? 4 : Math.max(3, Math.round(4 * uiS))
+    var newH = compact ? 22 : Math.max(22, Math.round(28 * uiS))
+    var midGap = compact ? 6 : 10
+    var bottomPad = compact ? 6 : 4      // 底部余量：按钮不贴圆角屏边缘
+
+    // 档位（本轮新增）：3×3 简单档 / 4×4 标准档 —— 格数、棋盘边长、达成线都随之变
+    var n = this.size === 3 ? 3 : 4
+    var blockH = newH
+    var boardBudget = this.pageH - topY - topH - blockH - midGap * 2 - bottomPad
+    var maxSideW = 192 - 2 * this.padX
+    var side = Math.max(48, Math.min(maxSideW, boardBudget))
+    var cell = Math.floor((side - (n - 1) * GRID_GAP) / n)
+    if (cell < 8) cell = 8
+    var boardSide = cell * n + (n - 1) * GRID_GAP
+    var boxSide = boardSide + 2          // +2：棋盘 1px 描边各占一边，内区正好等于 boardSide
+    var slack = this.pageH - (topY + topH + midGap + boardSide + midGap + blockH + bottomPad)
+    if (slack < 0) slack = 0
+
+    this.cell = cell
+    this.n = n
+    this.gap = GRID_GAP
+    this.bx = Math.round((192 - boxSide) / 2)
+    this.by = topY + topH + midGap + Math.round(slack / 2)
+    this.bs = boxSide
+
+    this.topH = topH
+    this.topY = topY
+    this.hudW = maxSideW
+    this.sf = (compact ? 12 : Math.max(11, Math.round(12 * uiS))) + (this.fontBump || 0)     // 底部「新局 / 档位」按钮字号
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+
+    this.btn = btn
+    this.gapD = gapD
+    this.newH = newH
+    this.padH = newH
+    this.padT = this.by + boardSide + midGap
+    this.padW = maxSideW
+    this.padL = this.padX
+    var halfW = Math.floor((maxSideW - gapD) / 2)
+    this.ngL = 0; this.ngT = 0; this.newW = halfW
+    this.szL = halfW + gapD; this.szT = 0; this.szW = maxSideW - halfW - gapD
+    this.szH = newH
+
+    var gx = []
+    var gy = []
+    for (var i = 0; i < n * n; i++) {
+      gx.push(Math.round((i % n) * (cell + GRID_GAP)))
+      gy.push(Math.round(Math.floor(i / n) * (cell + GRID_GAP)))
+    }
+    this.gx = gx
+    this.gy = gy
+  },
+
+  // 输入：格值、格边长；输出：字号（位数越多越小，保证 2048 这类 4 位数不溢出）。
+  tileFont(v, w) {
+    if (v >= 1000) return Math.max(8, Math.round(w * 0.30))
+    if (v >= 100) return Math.max(9, Math.round(w * 0.38))
+    if (v >= 10) return Math.max(10, Math.round(w * 0.44))
+    return Math.max(11, Math.round(w * 0.50))
+  },
+
+  // 输入：当前格对象、下一格对象；输出：字段是否完全一致（一致就不写，省一次无谓更新）。
+  sameTile(a, b) {
+    return !!a && a.l === b.l && a.t === b.t && a.w === b.w && a.v === b.v &&
+      a.bg === b.bg && a.fg === b.fg && a.fs === b.fs && a.lh === b.lh
+  },
+
+  // 输入：需要「尺寸微脉冲」的格号数组；输出：无。
+  // 逐格比较：值没变就不写；脉冲格临时给尺寸 +3px、位置 -1px（居中鼓包），130ms 后再传 [] 复位。
+  syncTiles(pulseIdx) {
+    if (!this.gx || !this.gx.length) return
+    var b = this.st.board
+    var cell = this.cell
+    var n = this.n || 4
+    var count = n * n
+    var nx = []
+    for (var i = 0; i < count; i++) {
+      var v = b[i] > 0 ? b[i] : 0
+      var look = tileLook(v)
+      var w = cell
+      var l = this.gx[i]
+      var t = this.gy[i]
+      if (pulseIdx.indexOf(i) >= 0) { w = cell + 3; l = l - 1; t = t - 1 }
+      nx.push({
+        l: l, t: t, w: w,
+        v: v === 0 ? '' : String(v),
+        bg: look.bg, fg: look.fg,
+        fs: this.tileFont(v, w), lh: w
+      })
+    }
+    if (!this.sameTile(this.k0, nx[0])) this.k0 = nx[0]
+    if (!this.sameTile(this.k1, nx[1])) this.k1 = nx[1]
+    if (!this.sameTile(this.k2, nx[2])) this.k2 = nx[2]
+    if (!this.sameTile(this.k3, nx[3])) this.k3 = nx[3]
+    if (!this.sameTile(this.k4, nx[4])) this.k4 = nx[4]
+    if (!this.sameTile(this.k5, nx[5])) this.k5 = nx[5]
+    if (!this.sameTile(this.k6, nx[6])) this.k6 = nx[6]
+    if (!this.sameTile(this.k7, nx[7])) this.k7 = nx[7]
+    if (!this.sameTile(this.k8, nx[8])) this.k8 = nx[8]
+    // 3×3 档只用 9 格（k9~k15 在模板里被 if 隐藏，不要写它们的数据）
+    if (count > 9) {
+      if (!this.sameTile(this.k9, nx[9])) this.k9 = nx[9]
+      if (!this.sameTile(this.k10, nx[10])) this.k10 = nx[10]
+      if (!this.sameTile(this.k11, nx[11])) this.k11 = nx[11]
+      if (!this.sameTile(this.k12, nx[12])) this.k12 = nx[12]
+      if (!this.sameTile(this.k13, nx[13])) this.k13 = nx[13]
+      if (!this.sameTile(this.k14, nx[14])) this.k14 = nx[14]
+      if (!this.sameTile(this.k15, nx[15])) this.k15 = nx[15]
+    }
+  },
+
+  // 分数与最高分同步：刷新显示，并在刷新新高时落盘持久化（**按当前档位各记一份**）
+  syncScore() {
+    this.score = this.st.score
+    if (this.st.score > this.best) {
+      this.best = this.st.score
+      if (!this.bestMap) this.bestMap = {}
+      this.bestMap[this.size] = this.best
+      config.saveSetting(this.bestKey(this.size), this.best)
+    }
+  },
+
+  // ── 操作 ────────────────────────────────────────────────────────
+  moveUp() { this.doMove('up') },
+  moveDown() { this.doMove('down') },
+  moveLeft() { this.doMove('left') },
+  moveRight() { this.doMove('right') },
+
+  // 输入：方向；输出：无。规则层判定没变化（moved=false）就直接返回——不生成、不震动、不重绘。
+  doMove(dir) {
+    if (this.dlg !== '') return
+    var before = this.st.board.slice()
+    var res = this.g.move(this.st, dir, this.randPair())
+    if (!res.moved) return
+    this.st = res.state
+    haptic.place()
+    this.syncScore()
+    // 脉冲格：本步「值变大」的格（合并结果 或 新生成块；纯滑动的格值不变、不脉冲）
+    var pulseIdx = []
+    var count = (this.n || 4) * (this.n || 4)
+    for (var i = 0; i < count; i++) if (this.st.board[i] > before[i]) pulseIdx.push(i)
+    this.syncTiles(pulseIdx)
+    var that = this
+    if (pulseIdx.length) this.after(130, function () { that.syncTiles([]) })
+    // 达成 2048：先弹「继续玩」；若这步同时无路可走，关窗后再弹终局
+    if (res.won && !this.celebrated) {
+      this.celebrated = true
+      this.dlg = 'win'
+      haptic.celebrate()
+      if (this.isChallenge) economy.completeDaily('g2048')
+      return
+    }
+    if (this.st.over) this.showOver()
+  },
+
+  showOver() {
+    this.dlg = 'over'
+    haptic.result()
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: true, score: this.st.score }).then(function (info) {
+        that.campaignNote = info && info.text ? info.text : ''
+      })
+    }
+  },
+
+  newGame() {
+    this.dlg = ''
+    this.celebrated = false
+    this.st = this.g.newGame(this.randPair())
+    this.syncScore()
+    this.syncTiles([])
+    haptic.place()
+  },
+
+  continuePlay() {
+    this.dlg = ''
+    if (this.st.over) this.showOver()
+  },
+
+  // ── 档位切换（3×3 简单档 / 4×4 标准档） ────────────────────────
+  // 正在进行的这局（已得分）先弹确认，防止误触丢掉分数；空局直接切。
+  tapSize() {
+    if (this.dlg !== '') return
+    if (this.isChallenge) return   // 挑战固定 4×4 档，保证同日局面可复现
+    if (this.st.score > 0) { this.dlg = 'size'; return }
+    this.switchSize()
+  },
+
+  confirmSize() {
+    this.dlg = ''
+    this.switchSize()
+  },
+
+  cancelSize() { this.dlg = '' },
+
+  // 换档 = 换引擎实例（3×3/4×4 的棋盘与达成线都不同）+ 换该档最高分 + 开新局；
+  // 选择落盘（g2048_size），下次进页面仍是这个档。
+  switchSize() {
+    if (this.isChallenge) return   // 挑战固定档位，不参与切档
+    this.size = this.size === 3 ? 4 : 3
+    config.saveSetting('g2048_size', this.size)
+    if (!this.bestMap) this.bestMap = {}
+    this.best = this.bestMap[this.size] || 0
+    this.g = g2048Factory.create(this.size)
+    this.st = this.g.newGame()
+    this.winTile = this.g.WIN_TILE
+    this.celebrated = false
+    this.syncSizeLabels()
+    this.layout()
+    this.syncScore()
+    this.syncTiles([])
+    haptic.place()
+  },
+
+  back() {
+    this.dlg = ''
+    this.clearTimers()
+    router.back()
+  },
+
+  // 点蒙层：切档确认按「取消」处理；「达成」弹窗可直接关（终局须按按钮，避免误触）
+  onMask() {
+    if (this.dlg === 'size') { this.dlg = ''; return }
+    if (this.dlg !== 'win') return
+    this.dlg = ''
+    if (this.st.over) this.showOver()
+  },
+
+  noop() {}
+}
+</script>

@@ -1,0 +1,284 @@
+/*
+ * pages/stats 样式 — 战绩大厅；颜色全部内联绑定 Token。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下），
+   无论运行时按文档顺序还是按 CSS 层叠规则绘制，内容都在背景之上。 */
+.topbar,
+.body {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse; /* DOM 中返回钮在后（置顶可点），视觉反转为左位 */
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮圆心 (38, 24+22) 到圆弧中心 (96,96) 须 ≤ R−r = 74；
+   24 时为 76.6（被切 2.6px），抬到 32 后为 71.6。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+/* 总览：三列数字 */
+.summary {
+  width: 168px;
+  height: 64px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 8px;
+}
+
+.s-col {
+  flex-direction: column;
+  align-items: center;
+}
+
+.s-num {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.s-cap {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.streak {
+  font-size: 12px;
+  line-height: 18px;
+  margin-left: 4px;
+  margin-bottom: 8px;
+}
+
+/* 分棋种战绩行 */
+.g-row {
+  width: 168px;
+  height: 52px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 12px;
+  padding-right: 12px;
+  margin-bottom: 6px;
+}
+
+.g-name {
+  font-size: 15px;
+  font-weight: bold;
+  flex: 1;
+}
+
+.g-stat {
+  font-size: 11px;
+}
+
+.sec-label {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+  margin-left: 4px;
+}
+
+.empty {
+  font-size: 12px;
+  line-height: 18px;
+  margin-left: 4px;
+}
+
+/* 最近对局行 */
+.r-row {
+  width: 168px;
+  height: 36px;
+  border-radius: 12px;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 10px;
+  padding-right: 10px;
+  margin-bottom: 6px;
+}
+
+.r-name {
+  font-size: 13px;
+  flex: 1;
+}
+
+.r-time {
+  font-size: 10px;
+  margin-right: 8px;
+}
+
+.r-mode {
+  font-size: 11px;
+  margin-right: 8px;
+}
+
+.r-res {
+  font-size: 13px;
+  font-weight: bold;
+}
+
+/* 方屏/矩形手表：紧凑参数 */
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 6px;
+    width: 176px;
+  }
+  /* 方屏正文宽 176，卡片却仍是胶囊屏的 168 → 左右各空 4px、与其他内容页不齐。
+     统一到 176（总览 / 棋种行 / 最近对局行），内容可用宽 144→152。 */
+  .summary,
+  .g-row,
+  .r-row {
+    width: 176px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**
+   （元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .s-num {
+    /* 宽胶囊三个数字（含 4 位数 + 100%）在 168 卡内放不下 21px，保持 18px */
+    font-size: 18px;
+    line-height: 22px;
+  }
+  .s-cap {
+    font-size: 14px;
+    line-height: 18px;
+  }
+  .streak {
+    font-size: 15px;
+    line-height: 21px;
+  }
+  .g-name {
+    font-size: 16px;
+    line-height: 20px;
+  }
+  .g-stat {
+    font-size: 13px;
+    line-height: 17px;
+  }
+  .g-row {
+    height: 64px;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+  }
+  .g-name {
+    flex: none;
+  }
+  .sec-label {
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .empty {
+    font-size: 15px;
+    line-height: 21px;
+  }
+  .r-row {
+    height: 44px;
+  }
+  .r-name {
+    font-size: 15px;
+  }
+  .r-time,
+  .r-mode {
+    font-size: 12px;
+  }
+  .r-res {
+    font-size: 15px;
+  }
+}

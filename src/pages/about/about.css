@@ -1,0 +1,210 @@
+/*
+ * pages/about 样式 — 关于页；颜色全部内联绑定 Token。
+ * 设计参考 bandcomic：hero 大卡（名称/版本居左、徽标居右）+ 信息块双行。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下），
+   无论运行时按文档顺序还是按 CSS 层叠规则绘制，内容都在背景之上。 */
+.topbar,
+.body {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse; /* DOM 中返回钮在后（置顶可点），视觉反转为左位 */
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮是 44×44 圆钮、左沿 x=16 → 圆心 (38, 24+22)，
+   圆心到屏幕圆弧中心 (96,96) 的距离须 ≤ R−r = 74；margin-top 24 时为 76.6（被切 2.6px），
+   抬到 32 后为 71.6（完整落在屏内）。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+/* hero 大卡：文字居左、徽标居右 */
+.hero {
+  width: 168px;
+  border-radius: 16px;
+  flex-direction: row;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 10px;
+}
+
+.hero-text {
+  flex: 1;
+  flex-direction: column;
+}
+
+.app-name {
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 28px;
+}
+
+.app-ver {
+  line-height: 16px;
+  margin-top: 2px;
+}
+
+/* hero 右侧徽标：192px 品牌位图按 48px 显示（自带圆角透明边，无需再套容器） */
+.hero-logo {
+  width: 48px;
+  height: 48px;
+}
+
+/* 信息块：标签次级色 + 值粗体（bandcomic copyright 式） */
+.info-block {
+  width: 168px;
+  border-radius: 12px;
+  flex-direction: column;
+  padding-top: 10px;
+  padding-bottom: 12px;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 10px;
+}
+
+.info-cap {
+  line-height: 16px;
+}
+
+.info-val {
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.gap {
+  width: 1px;
+  height: 10px;
+}
+
+.thx {
+  width: 168px;
+  text-align: center;
+  line-height: 18px;
+  margin-top: 4px;
+}
+
+/* 方屏/矩形手表：紧凑参数 */
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 8px;
+    width: 176px;
+  }
+  /* 方屏正文宽 176，hero / 信息块 / 致谢仍旧 168 → 差 8px、右边缘不齐。
+     统一到 176（左右内边距仍 14 → 文本可用 148）。 */
+  .hero,
+  .info-block,
+  .thx {
+    width: 176px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**
+   （元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .app-name {
+    font-size: 22px;
+    line-height: 30px;
+  }
+  .info-cap {
+    line-height: 20px;
+  }
+  .info-val {
+    line-height: 25px;
+  }
+  .thx {
+    line-height: 21px;
+  }
+}

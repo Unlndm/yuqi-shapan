@@ -1,0 +1,873 @@
+<!--
+  pages/maze — 单人迷宫探险（25 关）。
+  职责：渲染迷宫（墙 / 地 / 雾 / 玩家 / 出口 / 钥匙 / 宝石 / 陷阱 / 药水）
+        + 四方向键（44px）+ 上关 / 重置 / 帮助 / 下关（胶囊屏上功能键行收窄到 148 居中，
+          避开屏幕底部半圆，见 layout() 的 bottomPad），
+        驱动规则层（rules/maze.js）并做震感、弹窗、进度与存档。
+  规则逻辑全部在 rules/maze.js（纯数据）；页面只做驱动与展示。
+  渲染约定（本平台约束）：
+    · 棋盘用 `for="{{cells}}"`（minesweeper / sokoban 已验证），每格自带几何与显示字段；
+    · 未访问格（visited=false）用深色「雾」格遮罩；墙始终可见；
+    · 棋盘超出视口时放进原生 <scroll scroll-x scroll-y> 查看，方向键/功能键固定在滚动区外；
+    · 所有按钮显式内联 background-color 与 border-color；形状/圆角/排版写进 maze.css；
+    · 交互只有四方向按钮，不自绘 swipe/drag（自绘触摸会吞掉系统侧滑返回手势）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏：圆形返回键 + 右侧两行状态（关卡/生命、步数/钥匙/宝石） -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px;background-color:{{t.surfaceContainer}};border-color:{{t.hairline}}">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{hudF1}}px">{{hud1}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{hudF2}}px">{{hud2}}</text>
+      </div>
+      <!-- 矮画布：显示优先 —— 底部只留方向键，上关/重置/帮助/下关进此抽屉 -->
+      <input type="button" if="{{isPill}}" class="menu-fab" value="菜单"
+             style="width:34px;height:34px;border-radius:17px;font-size:10px;margin-left:6px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="openMenu" />
+    </div>
+
+    <!-- 棋盘滚动区：棋盘超出视口时可拖动查看；棋盘小于视口时居中。
+         内容结构照 sokoban / game 的真机结论：scroll 内放**流式** stage（显式宽高，position: relative），
+         board 用外边距定位 —— 绝对定位的中间盒在该机型上会被撑满并落在原点。 -->
+    <scroll class="bscroll" id="maze-scroll" scroll-x="true" scroll-y="true" bounces="false"
+            style="left:{{vx}}px;top:{{vy}}px;width:{{vw}}px;height:{{vh}}px">
+      <div class="stage" style="width:{{wrapW}}px;height:{{wrapH}}px">
+        <div class="board" style="margin-left:{{boardL}}px;margin-top:{{boardT}}px;width:{{boxW}}px;height:{{boxH}}px;background-color:{{boardBg}};border-color:{{t.outline}}">
+          <div class="cell" for="{{cells}}"
+               style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;background-color:{{$item.bg}};border-color:{{$item.bd}}">
+            <text class="cell-t" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.t}}</text>
+          </div>
+        </div>
+      </div>
+    </scroll>
+
+    <!-- 底部控件：方向键（高画布十字 / 矮画布一行）+ 上关·重置·帮助·下关 -->
+    <div class="pad" style="left:{{padL}}px;top:{{padT}}px;width:{{padW}}px;height:{{padH}}px">
+      <!-- 高画布：虚拟摇杆（触摸 → 归一化向量 → 主方向逐格移动）；矮画布仍保留四向键 -->
+      <block if="{{!compact}}">
+        <div class="joy-base" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <div class="joy-knob" style="left:{{knobL}}px;top:{{knobT}}px;width:{{knobD}}px;height:{{knobD}}px;background-color:{{t.primaryContainer}}"></div>
+        </div>
+        <div class="joy-touch" style="left:{{joyL}}px;top:{{joyT}}px;width:{{joyD}}px;height:{{joyD}}px"
+             @touchstart="onJoyStart" @touchmove="onJoyMove" @touchend="onJoyEnd"></div>
+      </block>
+      <block if="{{compact}}">
+        <input type="button" class="dbtn" value="左"
+               style="left:{{lfL}}px;top:{{lfT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="moveLeft" />
+        <input type="button" class="dbtn" value="上"
+               style="left:{{upL}}px;top:{{upT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="moveUp" />
+        <input type="button" class="dbtn" value="下"
+               style="left:{{dnL}}px;top:{{dnT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="moveDown" />
+        <input type="button" class="dbtn" value="右"
+               style="left:{{rtL}}px;top:{{rtT}}px;width:{{key}}px;height:{{key}}px;font-size:{{df}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="moveRight" />
+      </block>
+
+      <block if="{{!compact}}">
+        <input type="button" class="abtn" value="{{pLabel}}"
+               style="left:{{a1L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="prevLevel" />
+        <input type="button" class="abtn" value="重置"
+               style="left:{{a2L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="resetLevel" />
+        <input type="button" class="abtn" value="帮助"
+               style="left:{{a3L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="abtn" value="{{nLabel}}"
+               style="left:{{a4L}}px;top:{{aT}}px;width:{{aw}}px;height:{{actH}}px;font-size:{{sf}}px;color:{{nextHot ? t.onPrimaryContainer : t.onSurfaceVariant}};background-color:{{nextHot ? t.primaryContainer : t.surfaceContainerHigh}};border-color:{{nextHot ? t.primaryContainer : t.outline}}"
+               @click="nextLevel" />
+      </block>
+    </div>
+
+    <!-- 矮画布抽屉：上关 / 重置 / 帮助 / 下关（底部只留方向键，把高度还给棋盘） -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <div class="d-grid">
+          <input type="button" value="放大棋盘" class="d-item" disabled="{{zoomIdx >= zoomMax}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(1)" />
+          <input type="button" value="缩小棋盘" class="d-item" disabled="{{zoomIdx <= 0}}"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuZoom(-1)" />
+          <input type="button" value="{{pLabel}}" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuPrev" />
+          <input type="button" value="重置本关" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuReset" />
+          <input type="button" value="玩法介绍" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuHelp" />
+          <input type="button" value="{{nLabel}}" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuNext" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 弹窗：通关 / 失败 / 离开确认（同一时刻只弹一个） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">{{winTitle}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{winSub}}</text>
+          <block if="{{canNext}}">
+            <input type="button" class="m-btn" value="下一关"
+                   style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                   @click="nextLevel" />
+          </block>
+          <block if="{{!canNext}}">
+            <input type="button" class="m-btn" value="重玩本关"
+                   style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                   @click="resetLevel" />
+          </block>
+          <input type="button" class="m-btn" value="返回列表"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveNow" />
+        </block>
+
+        <block if="{{dlg === 'lose'}}">
+          <text class="modal-title" style="color:{{t.resultLose}}">生命耗尽</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{loseSub}}</text>
+          <input type="button" class="m-btn" value="重试本关"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="resetLevel" />
+          <input type="button" class="m-btn" value="返回列表"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leaveNow" />
+        </block>
+
+        <block if="{{dlg === 'exit'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">离开迷宫？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">离开前可保存本关进度，下次继续</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+          <input type="button" class="m-btn" value="保存并离开"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="saveAndLeave" />
+          <input type="button" class="m-btn" value="放弃进度"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="discardAndLeave" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './maze.css';
+</style>
+
+<script>
+/**
+ * 迷宫页脚本。
+ * 规则状态在 this.st（rules/maze.js 产出的纯数据）；每次移动整份替换（纯函数返回新状态）。
+ * 显示层只重建 this.cells（每格几何 + 颜色 + 字形），未访问格显示为雾。
+ * 持久化（@system.storage 经 utils/config 的 pref 接口）：
+ *   maze_unlocked —— 已解锁关卡数（1~25）；
+ *   maze_level    —— 上次停留的关卡号；
+ *   save_maze     —— 本关进行中的状态快照 { v, level, st }。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var toastMod = global.YQ.toast
+var maze = require('../../rules/maze.js')
+var levelsData = require('../../rules/maze-levels.js')
+var rng = global.YQ.rng
+var economy = global.YQ.economy
+
+var LEVELS = levelsData.LEVELS
+var LEVEL_COUNT = LEVELS.length
+var GRID_GAP = 1
+var MIN_CELL = 17           // 最小格宽：再小就成一团色块（超出视口交给 scroll）
+var MAX_CELL = 26
+var SAVE_V = 1
+
+// 盘面固定语义色（不随主题切换的「物体色」：墙、雾、钥匙、宝石、陷阱、药水）
+var WALL_BG = '#4A4F57'
+var WALL_BD = '#33373D'
+var FOG_BG = '#141218'
+var FOG_BD = '#1F1D24'
+var KEY_BG = '#E0B457'
+var KEY_BD = '#9C7A2E'
+var KEY_FG = '#2B1D00'
+var GEM_BG = '#63C7A6'
+var GEM_BD = '#2F7D68'
+var GEM_FG = '#04231A'
+var TRAP_BG = '#8C2F28'
+var TRAP_BD = '#5E1D18'
+var TRAP_FG = '#FFDAD6'
+var POT_BG = '#2E7D4F'
+var POT_BD = '#1E5533'
+var POT_FG = '#E8F5E9'
+
+// 输入：任意值、最小值、最大值；输出：夹紧后的整数。
+function clampInt(v, lo, hi) {
+  var n = typeof v === 'number' && isFinite(v) ? Math.floor(v) : lo
+  if (n < lo) return lo
+  if (n > hi) return hi
+  return n
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    campaignLevel: 0,        // 路由参数：闯关指定关内关卡（1~25）
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    designK: 1,
+    joyL: 0, joyT: 0, joyD: 84, knobD: 36, knobL: 24, knobT: 24,
+    joyDir: '', joyActive: false, joyTimer: null,
+    isPill: true,
+    level: 1,
+    levelCount: LEVEL_COUNT,
+    hp: 3,
+    maxHp: 3,
+    keysHave: 0,
+    keysNeed: 1,
+    gemsHave: 0,
+    gemsNeed: 0,
+    moves: 0,
+    nextHot: true,
+    dlg: '',
+    winTitle: '通关',
+    winSub: '',
+    loseSub: '',
+    canNext: false,
+
+    padX: 8, topY: 58, topH: 44, hudW: 176, hudF1: 12, hudF2: 10,
+    navSize: 44, navFont: 20, navR: 22,
+    vx: 8, vy: 158, vw: 176, vh: 220, wrapW: 176, wrapH: 220,
+    boardL: 0, boardT: 0, boxW: 176, boxH: 176, boardBg: themeMod.current().surfaceContainer,
+    cells: [], cell: 18, gap: GRID_GAP,
+    // 矮画布（<400）：显示优先 —— 底部只留方向键，上关/重置/帮助/下关进顶栏「菜单」抽屉
+    compact: false,
+    showMenu: false,
+    // 缩放（仅胶囊屏、多级）：与棋类对局页同口径 —— 缩放系数数组 + 下标，放大/缩小逐级切换；
+    // 0 档 = 整盘自适应，2.2 档 ≈ 双倍格宽，超出视口交给原生 scroll + 人物跟随。
+    zoomIdx: 0,
+    zoomSteps: [1, 1.3, 1.7, 2.2],
+    zoomMax: 3,
+    hud1: '', hud2: '',
+    padL: 20, padT: 352, padW: 152, padH: 132, key: 44, actH: 34, aw: 35,
+    upL: 54, upT: 0, lfL: 6, lfT: 48, dnL: 54, dnT: 48, rtL: 102, rtT: 48,
+    a1L: 0, a2L: 39, a3L: 78, a4L: 117, aT: 98, df: 16, sf: 11,
+    // 双轨口径：胶囊屏功能键只有 34 宽 → 用两字「上关 / 下关」；方屏/其他设备共用 176 设计，
+    // 按钮 41/35 宽，沿用三字「上一关 / 下一关」。
+    pLabel: '上一关', nLabel: '下一关'
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    this.st = null
+    this.timers = []
+    this.unlocked = 1
+    // 闯关/每日挑战：忽略已解锁进度，直接进指定（或按种子选出）的一关
+    this.isChallenge = Number(this.challenge) === 1
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'maze')
+      this.dailyRng = rng.create(seedNum)
+    }
+    this.recorded = false      // 本关本次尝试是否已写战绩（一局通关只记一次）
+    this.dropSave = false      // 选择「放弃进度」后，离屏自动存档必须跳过
+    this.cell = 18
+    this.gap = GRID_GAP
+
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('maze_unlocked', 1),
+      config.getPref('maze_level', 1),
+      config.getPref('save_maze', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.designK = l.scale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      if (that.isCampaign || that.isChallenge) {
+        that.unlocked = LEVEL_COUNT
+        var startLv = that.isCampaign
+          ? clampInt(that.campaignLevel, 1, LEVEL_COUNT)
+          : ((that.dailyRng ? that.dailyRng.int(LEVEL_COUNT) : 0) + 1)
+        that.loadLevel(startLv, false)
+        return
+      }
+      that.unlocked = clampInt(vals[1], 1, LEVEL_COUNT)
+      var saved = that.readSave(vals[3], that.unlocked)
+      if (saved) {
+        that.level = saved.level
+        that.st = saved.st
+        that.recorded = false
+        that.layout()
+        that.rebuild()
+        that.syncHud()
+        that.after(80, function () { that.centerOnPlayer(true) })
+        return
+      }
+      that.loadLevel(clampInt(vals[2], 1, that.unlocked))
+    })
+    config.loadSettings().then(function (s) {
+      var changed = config.applyTheme(that, s)
+      if (changed) that.paint()
+      haptic.applySettings(s)
+    })
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() { screen.keepScreenOn(true) },
+  onHide() {
+    if (this.joyTimer) { clearInterval(this.joyTimer); this.joyTimer = null }
+    this.joyActive = false
+    screen.keepScreenOn(false)
+    this.saveGame()
+  },
+  onDestroy() {
+    if (this.joyTimer) { clearInterval(this.joyTimer); this.joyTimer = null }
+    screen.keepScreenOn(false)
+    this.saveGame()
+    this.clearTimers()
+    this.timers = null
+  },
+
+  onBackPress() {
+    if (this.showMenu) { this.showMenu = false; return true }
+    if (this.dlg === 'win' || this.dlg === 'lose') return true   // 结果框必须选按钮
+    if (this.dlg !== '') { this.dlg = ''; return true }
+    if (this.st && !this.st.over) { this.dlg = 'exit'; return true }
+    router.back()
+    return true
+  },
+
+  // ── 矮画布抽屉（上关 / 重置 / 帮助 / 下关）──────────────────────
+  openMenu() { this.showMenu = true },
+  closeMenu() { this.showMenu = false },
+  menuReset() { this.showMenu = false; this.resetLevel() },
+  menuHelp() { this.showMenu = false; this.openHelp() },
+  menuPrev() { this.showMenu = false; this.prevLevel() },
+  menuNext() { this.showMenu = false; this.nextLevel() },
+  menuZoom(dir) { this.showMenu = false; if (dir > 0) this.zoomIn(); else this.zoomOut() },
+
+  // 多级缩放（仅胶囊屏）：与棋类对局页同口径，放大/缩小逐级切换，到顶/到底禁用
+  zoomIn() {
+    if (this.zoomIdx >= this.zoomMax) return
+    this.zoomIdx++
+    this.applyZoom()
+  },
+  zoomOut() {
+    if (this.zoomIdx <= 0) return
+    this.zoomIdx--
+    this.applyZoom()
+  },
+  applyZoom() {
+    this.layout()
+    this.rebuild()
+    this.syncHud()
+    haptic.place()
+    var that = this
+    this.after(80, function () { that.centerOnPlayer(true) })
+  },
+
+  // 本页所有延时都走自持定时器数组，离屏/销毁时统一清空。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 先扣顶栏与底部控件，其余给棋盘视口；棋盘格宽按「完整放下」反推，低于下限才交给 scroll。
+  // 顶部胶囊安全区口径与其余单人页一致（返回键左沿 x=8 时 y ≥ 58）。
+  layout() {
+    var uiS = this.uiS || 1
+    var compact = this.pageH < 400
+    var navG = metrics.nav(uiS, compact)
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    var topH = navG.size
+    var midGap = compact ? 6 : 10
+    // 胶囊屏底部半圆：矮画布只剩一条 176 宽的方向键 → 需让位 57.6，取 62；
+    // 高画布功能键行 148 宽 → 取 40。方屏是矩形屏，保持 6。
+    var bottomPad = this.isPill ? (compact ? 62 : 40) : 6
+    var key = 44
+    var gapD = 4
+    var actH = 34
+    var dirH = compact ? key : (key * 2 + gapD)
+    // 矮画布：功能键收进抽屉 → 控制区只占一行方向键（44），棋盘视口 94 → 130
+    var blockH = compact ? key : (dirH + 6 + actH)
+
+    var viewTop = topY + topH + midGap
+    var viewH = this.pageH - viewTop - blockH - midGap - bottomPad
+    if (viewH < 50) viewH = 50
+    var viewBottom = viewTop + viewH
+
+    var cols = this.st ? this.st.width : 9
+    var rows = this.st ? this.st.height : 9
+    var vw = 176
+    var gap = GRID_GAP
+    var fitW = Math.floor((vw - 2 - (cols - 1) * gap) / cols)
+    var fitH = Math.floor((viewH - 2 - (rows - 1) * gap) / rows)
+    var baseCell = Math.min(MAX_CELL, fitW, fitH)
+    if (baseCell < MIN_CELL) baseCell = MIN_CELL
+    var z = this.isPill ? this.zoomSteps[this.zoomIdx] : 1
+    var cell = Math.round(baseCell * z)
+    if (cell < MIN_CELL) cell = MIN_CELL
+    var innerW = cols * cell + (cols - 1) * gap
+    var innerH = rows * cell + (rows - 1) * gap
+    var boxW = innerW + 2
+    var boxH = innerH + 2
+
+    this.cell = cell
+    this.gap = gap
+    this.topY = topY
+    this.topH = topH
+    this.hudW = 176
+    this.hudF1 = (this.isPill ? 10 : (compact ? 11 : 12)) + (this.fontBump || 0)
+    this.hudF2 = (this.isPill ? 9 : (compact ? 9 : 10)) + (this.fontBump || 0)
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+    this.df = (compact ? 15 : 16) + (this.fontBump || 0)
+    this.sf = (compact ? 10 : 11) + (this.fontBump || 0)
+    this.compact = compact
+    this.pLabel = this.isPill ? '上关' : '上一关'
+    this.nLabel = this.isPill ? '下关' : '下一关'
+    this.vx = 8
+    this.vy = viewTop
+    this.vw = vw
+    this.vh = viewH
+    this.wrapW = Math.max(vw, boxW)
+    this.wrapH = Math.max(viewH, boxH)
+    this.boardL = Math.floor((this.wrapW - boxW) / 2)
+    this.boardT = Math.floor((this.wrapH - boxH) / 2)
+    this.boxW = boxW
+    this.boxH = boxH
+    this.boardBg = this.t.surfaceContainer
+
+    this.padT = viewBottom + midGap
+    this.padH = blockH
+    this.key = key
+    this.actH = actH
+    this.joyL = 0
+    this.joyT = 0
+    this.joyD = 84
+    this.knobD = 36
+    this.knobL = 24
+    this.knobT = 24
+
+    if (compact) {
+      // 矮画布：四方向键排成一行（4×44 = 176，正好一条），下面一行功能键。
+      this.padW = 176
+      this.padL = 8
+      this.lfL = 0; this.lfT = 0
+      this.upL = key; this.upT = 0
+      this.dnL = key * 2; this.dnT = 0
+      this.rtL = key * 3; this.rtT = 0
+      var aw = this.isPill ? 34 : Math.floor((176 - gapD * 3) / 4)   // 41 ≥ 34
+      this.aw = aw
+      var actL = Math.floor((176 - (aw * 4 + gapD * 3)) / 2)
+      this.a1L = actL
+      this.a2L = actL + aw + gapD
+      this.a3L = actL + (aw + gapD) * 2
+      this.a4L = actL + (aw + gapD) * 3
+      this.aT = key + gapD
+    } else {
+      // 高画布：十字方向键居中，功能键排成一行（4×35 + 3×4 = 152）
+      this.padW = 152
+      this.padL = Math.round((192 - this.padW) / 2)
+      var crossL = Math.floor((this.padW - (key * 3 + gapD * 2)) / 2)
+      this.upL = crossL + key + gapD; this.upT = 0
+      this.lfL = crossL; this.lfT = key + gapD
+      this.dnL = crossL + key + gapD; this.dnT = key + gapD
+      this.rtL = crossL + (key + gapD) * 2; this.rtT = key + gapD
+      var aw2 = this.isPill ? 34 : Math.floor((this.padW - gapD * 3) / 4)   // 35 ≥ 34
+      this.aw = aw2
+      var actL2 = Math.floor((this.padW - (aw2 * 4 + gapD * 3)) / 2)
+      this.a1L = actL2
+      this.a2L = actL2 + aw2 + gapD
+      this.a3L = actL2 + (aw2 + gapD) * 2
+      this.a4L = actL2 + (aw2 + gapD) * 3
+      this.aT = dirH + 6
+    }
+  },
+
+  // ── 关卡与存档 ──────────────────────────────────────────────────
+  // 输入：关卡号、是否落盘关卡进度；输出：无。超界/未解锁一律夹到合法范围。
+  loadLevel(n, persist) {
+    var lv = clampInt(n, 1, this.unlocked)
+    var data = LEVELS[lv - 1]
+    var st = data ? maze.parse(data) : null
+    if (!st) {
+      toastMod.toast('关卡数据异常')
+      haptic.invalid()
+      return
+    }
+    this.level = lv
+    this.st = st
+    this.recorded = false
+    this.dropSave = false
+    this.dlg = ''
+    // 主动换关（或首次进入）时丢掉上一关的旧快照，避免下次进入被旧关卡抢回。
+    config.clearPref('save_maze')
+    if (persist !== false) config.saveSetting('maze_level', lv)
+    this.layout()
+    this.rebuild()
+    this.syncHud()
+    var that = this
+    this.after(60, function () { that.centerOnPlayer(true) })
+  },
+
+  // 输入：storage 里的快照、已解锁关卡数；输出：{ level, st } 或 null（脏档一律丢弃）。
+  // 快照必须与内置关卡完全同图、未终局、坐标在盘内，避免旧档/改图后错位。
+  readSave(raw, unlocked) {
+    if (!raw || raw.v !== SAVE_V || !raw.st) return null
+    if (typeof raw.level !== 'number' || !isFinite(raw.level)) return null
+    var lv = Math.floor(raw.level)
+    if (lv < 1 || lv > unlocked || lv > LEVEL_COUNT) return null
+    var lvData = LEVELS[lv - 1]
+    if (!lvData) return null
+    var st = maze.clone(raw.st)
+    if (!st || st.over || st.win || st.dead) return null
+    if (st.id !== lv) return null
+    if (!st.rows || st.rows.length !== st.height) return null
+    if (st.rows.join('\n') !== lvData.map.join('\n')) return null
+    var total = st.width * st.height
+    if (total <= 0) return null
+    if (st.visited.length !== total || st.walls.length !== total ||
+        st.keys.length !== total || st.gems.length !== total ||
+        st.traps.length !== total || st.potions.length !== total) return null
+    if (st.player < 0 || st.player >= total || st.exit < 0 || st.exit >= total) return null
+    if (st.hp <= 0) return null
+    return { level: lv, st: st }
+  },
+
+  saveGame() {
+    if (!this.st || this.st.over || this.dropSave || this.isCampaign) return
+    config.saveSetting('save_maze', { v: SAVE_V, level: this.level, st: this.st })
+  },
+
+  // ── 渲染 ────────────────────────────────────────────────────────
+  // 输入：无；输出：无。主题变化后重绘（几何不变，只换色）。
+  paint() {
+    this.boardBg = this.t.surfaceContainer
+    this.rebuild()
+  },
+
+  rebuild() {
+    if (!this.st) { this.cells = []; return }
+    var st = this.st
+    var cell = this.cell
+    var gap = this.gap
+    var step = cell + gap
+    var fs = Math.max(8, Math.round(cell * 0.52))
+    var arr = []
+    for (var i = 0; i < st.width * st.height; i++) {
+      var look = this.cellLook(i)
+      arr.push({
+        left: (i % st.width) * step,
+        top: Math.floor(i / st.width) * step,
+        w: cell,
+        t: look.t,
+        fg: look.fg,
+        bg: look.bg,
+        bd: look.bd,
+        fs: look.t ? fs : 0,
+        lh: cell
+      })
+    }
+    this.cells = arr
+  },
+
+  // 输入：格号；输出：该格显示字段。墙 / 雾 / 玩家 / 出口 / 钥匙 / 宝石 / 陷阱 / 药水 / 地面。
+  cellLook(i) {
+    var st = this.st
+    var t = this.t
+    if (st.walls[i]) return { t: '', fg: WALL_BG, bg: WALL_BG, bd: WALL_BD }
+    if (!st.visited[i]) return { t: '', fg: FOG_BG, bg: FOG_BG, bd: FOG_BD }
+    if (i === st.player) return { t: '人', fg: t.onPrimary, bg: t.primary, bd: t.primary }
+    if (i === st.exit) {
+      if (st.collectedKeys < st.totalKeys) {
+        return { t: '锁', fg: t.onSurfaceVariant, bg: t.surfaceVariant, bd: t.outline }
+      }
+      return { t: '出', fg: t.onPrimaryContainer, bg: t.primaryContainer, bd: t.primary }
+    }
+    if (st.keys[i]) return { t: '钥', fg: KEY_FG, bg: KEY_BG, bd: KEY_BD }
+    if (st.gems[i]) return { t: '宝', fg: GEM_FG, bg: GEM_BG, bd: GEM_BD }
+    if (st.traps[i]) return { t: '陷', fg: TRAP_FG, bg: TRAP_BG, bd: TRAP_BD }
+    if (st.potions[i]) return { t: '药', fg: POT_FG, bg: POT_BG, bd: POT_BD }
+    return { t: '', fg: t.onSurface, bg: t.surfaceContainerHigh, bd: t.surfaceContainerHigh }
+  },
+
+  syncHud() {
+    if (!this.st) return
+    var st = this.st
+    this.hp = st.hp
+    this.maxHp = st.maxHp
+    this.keysHave = st.collectedKeys
+    this.keysNeed = st.totalKeys
+    this.gemsHave = st.collectedGems
+    this.gemsNeed = st.totalGems
+    this.moves = st.moves
+    // 顶栏右侧有「菜单」按钮（仅胶囊屏）：文字可用宽收窄 → 两行都写短（宝石计数留在方屏档）
+    if (this.isPill) {
+      this.hud1 = this.level + '/' + this.levelCount + ' · HP' + this.hp
+      this.hud2 = '步' + this.moves + ' 钥' + this.keysHave + '/' + this.keysNeed
+    } else {
+      this.hud1 = '第 ' + this.level + '/' + this.levelCount + ' 关 · HP ' + this.hp + '/' + this.maxHp
+      this.hud2 = '步 ' + this.moves + ' · 钥 ' + this.keysHave + '/' + this.keysNeed +
+        ' · 宝 ' + this.gemsHave + '/' + this.gemsNeed
+    }
+    this.nextHot = this.level < LEVEL_COUNT && this.level < this.unlocked
+  },
+
+  // ── 操作 ────────────────────────────────────────────────────────
+  // ── 虚拟摇杆：手指向量 → 主方向 → 逐格移动（死区 0.30 / 180ms 连走） ──
+  onJoyStart(e) {
+    this.joyActive = true
+    this.trackJoy(e)
+    if (this.joyDir) this.doMove(this.joyDir)
+    if (this.joyTimer) clearInterval(this.joyTimer)
+    var that = this
+    this.joyTimer = setInterval(function () {
+      if (!that.joyActive || !that.joyDir) return
+      that.doMove(that.joyDir)
+    }, 180)
+  },
+
+  onJoyMove(e) {
+    if (this.joyActive) this.trackJoy(e)
+  },
+
+  onJoyEnd() {
+    this.joyActive = false
+    this.joyDir = ''
+    if (this.joyTimer) { clearInterval(this.joyTimer); this.joyTimer = null }
+    this.knobL = 24
+    this.knobT = 24
+  },
+
+  trackJoy(e) {
+    var t = e && e.touches && e.touches[0]
+    if (!t) return
+    var k = this.designK || 1
+    var x = (t.clientX !== undefined ? t.clientX : t.x) / k
+    var y = (t.clientY !== undefined ? t.clientY : t.y) / k
+    var cx = this.padL + this.joyD / 2
+    var cy = this.padT + this.joyD / 2
+    var dx = x - cx
+    var dy = y - cy
+    var max = this.joyD / 2 - this.knobD / 2
+    var d = Math.sqrt(dx * dx + dy * dy)
+    if (d > max) {
+      dx = dx * max / d
+      dy = dy * max / d
+    }
+    this.knobL = Math.round(this.joyD / 2 - this.knobD / 2 + dx)
+    this.knobT = Math.round(this.joyD / 2 - this.knobD / 2 + dy)
+    var nx = dx / max
+    var ny = dy / max
+    if (Math.sqrt(nx * nx + ny * ny) < 0.30) {
+      this.joyDir = ''
+      return
+    }
+    if (Math.abs(nx) > Math.abs(ny)) this.joyDir = nx > 0 ? 'right' : 'left'
+    else this.joyDir = ny > 0 ? 'down' : 'up'
+  },
+
+  moveUp() { this.doMove('up') },
+  moveDown() { this.doMove('down') },
+  moveLeft() { this.doMove('left') },
+  moveRight() { this.doMove('right') },
+
+  // 输入：方向；输出：无。撞墙/越界只给弱震动；钥匙未集齐踩出口给提示（均不消耗步数）。
+  doMove(dir) {
+    if (!this.st || this.dlg !== '' || this.st.over) return
+    var res = maze.move(this.st, dir)
+    if (res.invalid) return
+    if (!res.moved) {
+      if (res.event === 'locked') {
+        // 撞到锁着的出口也把这一格揭开，玩家能看到门在哪（visited 只影响显示）。
+        this.st.visited[this.st.exit] = true
+        this.rebuild()
+        toastMod.toast('还差 ' + (this.st.totalKeys - this.st.collectedKeys) + ' 把钥匙')
+      }
+      haptic.invalid()
+      return
+    }
+    this.st = res.state
+    var ev = res.events || []
+    this.rebuild()
+    this.syncHud()
+    this.centerOnPlayer(false)
+    if (this.st.win) { this.finishWin(); return }
+    if (this.st.dead) { this.finishLose(); return }
+    if (ev.indexOf('trap') >= 0) haptic.capture()
+    else haptic.place()
+    if (ev.indexOf('keysAll') >= 0) toastMod.toast('钥匙集齐 · 出口已开')
+    else if (ev.indexOf('key') >= 0) toastMod.toast('拿到钥匙 +1')
+    else if (ev.indexOf('gem') >= 0) toastMod.toast('宝石 +' + maze.GEM_SCORE)
+    else if (ev.indexOf('potion') >= 0) toastMod.toast('药水 · 生命 +1')
+    else if (ev.indexOf('trap') >= 0) toastMod.toast('陷阱 · 生命 -1')
+  },
+
+  resetLevel() {
+    if (!this.st) return
+    var st = maze.reset(this.st)
+    if (!st) { toastMod.toast('关卡数据异常'); haptic.invalid(); return }
+    this.st = st
+    this.recorded = false
+    this.dropSave = false
+    this.dlg = ''
+    this.rebuild()
+    this.syncHud()
+    this.centerOnPlayer(true)
+    haptic.place()
+  },
+
+  prevLevel() {
+    if (this.dlg !== '') return
+    if (this.level <= 1) { toastMod.toast('已是第一关'); haptic.invalid(); return }
+    this.loadLevel(this.level - 1)
+  },
+
+  nextLevel() {
+    if (this.level >= LEVEL_COUNT) { toastMod.toast('已是最后一关'); haptic.invalid(); return }
+    if (this.level >= this.unlocked) { toastMod.toast('先通关本关才能解锁下一关'); haptic.invalid(); return }
+    this.loadLevel(this.level + 1)
+  },
+
+  // ── 终局 ────────────────────────────────────────────────────────
+  finishWin() {
+    var advanced = false
+    if (!this.isCampaign && this.level < LEVEL_COUNT && this.unlocked <= this.level) {
+      this.unlocked = this.level + 1
+      advanced = true
+      config.saveSetting('maze_unlocked', this.unlocked)
+    }
+    // 单人通关计入战绩（mode='solo'）：失败/重置不记录，本关本次通关只写一次。
+    if (!this.recorded) {
+      this.recorded = true
+      config.recordResult('maze', 'win', 'solo')
+    }
+    if (this.isChallenge) economy.completeDaily('maze')
+    config.clearPref('save_maze')
+    this.syncHud()
+    this.winTitle = this.level >= LEVEL_COUNT ? '全部通关' : '通关'
+    this.winSub = '步 ' + this.st.moves + ' · 宝石 ' + this.st.collectedGems + '/' + this.st.totalGems +
+      (advanced ? ' · 首通 已解锁 ' + this.unlocked + '/' + LEVEL_COUNT : '')
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: true, steps: this.st.moves }).then(function (info) {
+        if (info && info.text) that.winSub = that.winSub + ' · ' + info.text
+      })
+    }
+    this.canNext = !this.isCampaign && this.level < LEVEL_COUNT && this.unlocked > this.level
+    this.dlg = 'win'
+    haptic.celebrate()
+  },
+
+  finishLose() {
+    config.clearPref('save_maze')
+    this.loseSub = '步 ' + this.st.moves + ' · 宝石 ' + this.st.collectedGems + '/' + this.st.totalGems
+    this.dlg = 'lose'
+    haptic.result()
+  },
+
+  // ── 视口居中 ────────────────────────────────────────────────────
+  // 棋盘大于视口时，把玩家所在格居中；整盘可见时回滚到原点即可。
+  centerOnPlayer(instant) {
+    if (!this.st) return
+    if (this.wrapW <= this.vw && this.wrapH <= this.vh) {
+      this.scrollTo(0, 0, true)
+      return
+    }
+    var step = this.cell + this.gap
+    var col = this.st.player % this.st.width
+    var row = Math.floor(this.st.player / this.st.width)
+    var cx = this.boardL + 1 + col * step + this.cell / 2
+    var cy = this.boardT + 1 + row * step + this.cell / 2
+    var left = Math.max(0, Math.min(this.wrapW - this.vw, Math.round(cx - this.vw / 2)))
+    var top = Math.max(0, Math.min(this.wrapH - this.vh, Math.round(cy - this.vh / 2)))
+    this.scrollTo(left, top, instant)
+  },
+
+  scrollTo(left, top, instant) {
+    try {
+      this.$element('maze-scroll').scrollTo({
+        left: Math.max(0, Math.round(left)),
+        top: Math.max(0, Math.round(top)),
+        behavior: instant ? 'auto' : 'smooth'
+      })
+    } catch (e) {}
+  },
+
+  // ── 弹窗与离开 ──────────────────────────────────────────────────
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  back() {
+    if (this.dlg === 'win' || this.dlg === 'lose') return
+    if (this.dlg !== '') { this.dlg = ''; return }
+    if (this.st && !this.st.over) { this.dlg = 'exit'; return }
+    this.leaveNow()
+  },
+
+  closeDlg() { this.dlg = '' },
+
+  // 保存本关进行中的状态后离开（下次进入自动续上）。
+  saveAndLeave() {
+    this.dlg = ''
+    this.saveGame()
+    router.back()
+  },
+
+  discardAndLeave() {
+    this.dlg = ''
+    this.dropSave = true      // 阻止 onHide / onDestroy 把刚丢弃的进度又存回去
+    config.clearPref('save_maze')
+    router.back()
+  },
+
+  // 结果框里的「返回列表」：终局不写快照，直接离开。
+  leaveNow() {
+    this.dlg = ''
+    if (this.st && !this.st.over) this.saveGame()
+    router.back()
+  },
+
+  // 点蒙层只关离开确认；结果框要求按按钮（与 g2048 / sokoban 一致）
+  onMask() {
+    if (this.dlg === 'exit') this.dlg = ''
+  },
+
+  noop() {}
+}
+</script>

@@ -1,0 +1,227 @@
+<!--
+  pages/stats — 战绩大厅。
+  职责：基于 chess_records（上限 200 条）展示 总场次/人机胜率 + 分棋种战绩
+        + 最近对局列表。聚合逻辑在 config.aggregateRecords（纯函数，有测试）。
+  人机模式战绩以玩家视角统计（胜/负/和）；双人模式按黑胜/白胜/和展示。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">战绩大厅</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" id="body" scroll-y="true">
+      <block if="{{tab === 'overview'}}">
+      <!-- 总览：均为本机玩家视角 -->
+      <div class="summary" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{total}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">总局数</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.primary}}">{{winCount}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">胜场</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.primary}}">{{winRate}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">胜率</text>
+        </div>
+      </div>
+      <text class="streak" style="color:{{t.onSurfaceVariant}}">当前连胜 {{streakCur}} · 最长连胜 {{streakBest}}</text>
+      <text class="streak" if="{{soloCount > 0}}" style="color:{{t.onSurfaceVariant}}">单人通关 {{soloCount}} 局（不计入胜率）</text>
+      </block>
+
+      <block if="{{tab === 'games'}}">
+      <!-- 分棋种战绩 -->
+      <div class="g-row" for="{{(gi, g) in gameRows}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="g-name" style="color:{{t.onSurface}}">{{g.name}}</text>
+        <text class="g-stat" style="color:{{t.onSurfaceVariant}};font-size:{{statFs}}px">{{g.text}}</text>
+      </div>
+      </block>
+
+      <block if="{{tab === 'recent'}}">
+      <!-- 最近对局 -->
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">最近对局</text>
+      <text class="empty" if="{{recent.length === 0}}" style="color:{{t.onSurfaceVariant}}">暂无对局记录，去下一局吧</text>
+      <div class="r-row" for="{{(ri, r) in recent}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <text class="r-name" style="color:{{t.onSurface}}">{{r.name}}</text>
+        <text class="r-time" style="color:{{t.onSurfaceVariant}};font-size:{{statFs}}px">{{r.timeLabel}}</text>
+        <text class="r-mode" style="color:{{t.onSurfaceVariant}};font-size:{{statFs}}px">{{r.modeLabel}}</text>
+        <text class="r-res" style="color:{{r.resColor}}">{{r.resultLabel}}</text>
+      </div>
+      </block>
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 页面内分类 dock：总览 / 棋种 / 最近（只切换本页内容） -->
+    <div class="dock dock-3" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="总览" class="dock-item"
+             style="color:{{tab === 'overview' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'overview' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('overview')" />
+      <input type="button" value="棋种" class="dock-item"
+             style="color:{{tab === 'games' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'games' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('games')" />
+      <input type="button" value="最近" class="dock-item"
+             style="color:{{tab === 'recent' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'recent' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('recent')" />
+    </div>
+
+  </div>
+</template>
+
+<style>
+@import './stats.css';
+@import '../../common/ui.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+/**
+ * 战绩大厅脚本。聚合用 config.aggregateRecords；本页只做展示文案拼装。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+
+// 输入：对局时间戳；输出：展示标签（8 小时内「今天」、32 小时内「昨天」、否则 M月D日）。
+function timeLabel(ts) {
+  if (!ts) return ''
+  var d = new Date(ts)
+  var diff = Date.now() - ts
+  if (diff < 8 * 3600 * 1000) return '今天'
+  if (diff < 32 * 3600 * 1000) return '昨天'
+  return (d.getMonth() + 1) + '月' + d.getDate() + '日'
+}
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    tab: 'overview',
+    fz: config.fontTokens('normal'),
+    statFs: 11,             // 分棋种/最近对局行内的次级文字字号（手环10 收在 12，避免挤行）
+    streakCur: 0,
+    streakBest: 0,
+    total: 0,
+    winCount: 0,
+    soloCount: 0,
+    winRate: '—',
+    gameRows: [],
+    recent: []
+  },
+
+  onShow() {
+    var that = this
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.statFs = that.fontBump ? 12 : that.fz.sm
+    })
+    // 设置与记录一并读齐后再渲染：配色必须先生效——旧版把胜负色写死成 dark 色板，
+    // 浅色模式下红/绿/灰几乎看不见（对比度 1.1~1.6）。
+    Promise.all([
+      config.loadSettings(),
+      config.getPref('records', [])
+    ]).then(function (vals) {
+      var s = vals[0]
+      config.applyTheme(that, s)   // 判重：主题没变就不重设背景图（避免切页时闪一下）
+      that.statFs = that.fontBump ? 12 : that.fz.sm
+      that.renderStats(vals[1] || [])
+    })
+  },
+
+  // 输入：records 原始数组；输出：无（写入展示数据）。
+  renderStats(records) {
+    var agg = config.aggregateRecords(records)
+    this.streakCur = agg.streakCur
+    this.streakBest = agg.streakBest
+    this.total = agg.total
+    this.winCount = agg.winCount
+    this.soloCount = agg.soloCount
+    // 胜率分母固定为人机 + 双人局数：单人通关（mode='solo'）不计入胜率。
+    var versus = agg.aiCount + agg.pvpCount
+    this.winRate = versus > 0 ? Math.round((agg.winCount * 100) / versus) + '%' : '—'
+
+    // 分棋种行（保持 GAME_TYPES 顺序，只列可用棋种）
+    var rows = []
+    var games = config.GAME_TYPES
+    for (var i = 0; i < games.length; i++) {
+      if (!games[i].enabled) continue
+      var g = agg.perGame[games[i].id]
+      var text = '暂未开过局'
+      var none = true
+      if (g && g.count > 0) {
+        none = false
+        var parts = []
+        var aiN = g.aiWin + g.aiLose + g.aiDraw
+        if (aiN > 0) parts.push('人机 ' + g.aiWin + '胜' + g.aiLose + '负' + (g.aiDraw > 0 ? g.aiDraw + '和' : ''))
+        var pvpN = g.pvpWin + g.pvpLose + g.pvpDraw + g.pvpBlack + g.pvpWhite
+        if (pvpN > 0) parts.push('双人 ' + pvpN + '局')
+        if (g.soloCount > 0) parts.push('单人 通关 ' + g.soloWin + ' 局')
+        text = parts.length ? parts.join(' · ') : '暂未开过局'
+      }
+      rows.push({ name: games[i].name, text: text, none: none })
+    }
+    this.gameRows = rows
+
+    // 最近 8 局，新→旧；胜负均以本机玩家视角着色
+    var recent = []
+    var colorMap = {
+      win: this.t.resultWin,
+      lose: this.t.resultLose,
+      draw: this.t.resultDraw
+    }
+    for (var k = records.length - 1; k >= 0 && recent.length < 8; k--) {
+      var r = records[k]
+      var game = config.getGame(r.game)
+      var isPvp = r.mode === 'pvp'
+      var isSolo = r.mode === 'solo'
+      var label
+      var color
+      if (isSolo) {
+        label = r.result === 'win' ? '通关' : '未过'
+        color = r.result === 'win' ? colorMap.win : colorMap.lose
+      } else if (r.result === 'win') {
+        label = '胜'
+        color = colorMap.win
+      } else if (r.result === 'lose') {
+        label = '负'
+        color = colorMap.lose
+      } else if (r.result === 'draw') {
+        label = '和'
+        color = colorMap.draw
+      } else {
+        // 旧版黑/白记录
+        label = r.result === 'black' ? '黑胜' : '白胜'
+        color = this.t.onSurface
+      }
+      recent.push({
+        name: game ? game.name : '未知棋种',
+        timeLabel: timeLabel(r.ts),
+        modeLabel: isPvp ? '双人' : (isSolo ? '单人' : '人机'),
+        resultLabel: label,
+        resColor: color
+      })
+    }
+    this.recent = recent
+  },
+
+  // 页面内分类切换：总览 / 棋种 / 最近；切换后回到正文顶部
+  pickTab(k) {
+    if (k === this.tab) return
+    this.tab = k
+    var el = this.$element('body')
+    if (el && el.scrollTo) el.scrollTo({ top: 0 })
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

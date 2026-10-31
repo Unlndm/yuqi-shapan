@@ -1,0 +1,321 @@
+<!--
+  pages/campaign — 闯关列表。
+  职责：展示当前章的 10 关（序号 / 名称 / 目标文案 / 星级 / 奖励 / 锁状态）；
+        已解锁关卡点击后按玩法路由到对应页面，并统一带 campaignId（结算钩子见 campaign/report）。
+  数据：src/campaign/levels.js（纯数据）+ campaign/core.js（chapterAt / summary 纯函数）
+        + campaign/store.js（storage 封装，onShow 时刷新）。
+  运存：**一次只渲染一章**。旧版把多章 × 10 关共 60+ 张卡片、近千条样式绑定同时写进
+        scroll，手表运存峰值过高；现在模板里只有当前章的 10 行，章节由顶部的
+        「上一章 / 下一章」切换（默认定位到当前进度所在章）。
+  锁规则：全局序号 > unlocked 即锁定；空存档 unlocked=1，即第 1 关默认解锁。
+  入口：主界面 tab / 赛季页；本页只负责列表与开局路由。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="title" style="color:{{t.onSurface}}">闯关</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <!-- 单章列表：总览 / 章节切换行 / 当前章 10 关（全部放进 scroll，总览可随列表滚走，
+         把固定区高度留给列表；dock 是覆盖层，列表末尾另有 dock-pad 让位）。 -->
+    <scroll class="body" id="list" scroll-y="true" bounces="false">
+      <!-- 总览：总星数 / 总关卡通关进度 / 完成度 -->
+      <div class="summary" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.primary}}">{{starText}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">总星数</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{clearText}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">通关关卡</text>
+        </div>
+        <div class="s-col">
+          <text class="s-num" style="color:{{t.onSurface}}">{{pctText}}</text>
+          <text class="s-cap" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">完成度</text>
+        </div>
+      </div>
+      <text class="hint" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">通关解锁下一关；首次通关发棋币</text>
+      <div class="chapter">
+        <div class="sec-line">
+          <input type="button" value="＜" class="ch-nav" disabled="{{!canPrev}}"
+                 style="color:{{canPrev ? t.onSurface : t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+                 @click="prevChapter" />
+          <div class="sec-mid">
+            <text class="sec-label" style="color:{{t.onSurfaceVariant}}">{{chapterLabel}}</text>
+            <text class="sec-stars" style="color:{{t.onSurfaceVariant}}">{{chapterStarText}}</text>
+          </div>
+          <input type="button" value="＞" class="ch-nav" disabled="{{!canNext}}"
+                 style="color:{{canNext ? t.onSurface : t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+                 @click="nextChapter" />
+        </div>
+        <!-- 整行可点（高 ≥34）；锁定时 openLevel 直接返回，不给任何反馈。
+             配色全部由 locked / stars 在模板里现算，行数据只保留 8 个字段
+             （旧版每行存 14 个字段、配色重复存一遍，60 行的观察器开销很大）。 -->
+        <div class="lv-card" for="{{(li, lv) in rows}}"
+             style="background-color:{{lv.locked ? t.surface : (lv.stars >= 1 ? t.surfaceContainerHigh : t.cardBg)}};border-color:{{t.hairline}}"
+             @click="openLevel(li)">
+          <div class="lv-top">
+            <text class="lv-idx"
+                  style="background-color:{{lv.locked ? t.surfaceVariant : (lv.stars >= 1 ? t.primaryContainer : t.surfaceContainerHigh)}};color:{{lv.locked ? t.onSurfaceVariant : (lv.stars >= 1 ? t.onPrimaryContainer : t.primary)}}">{{lv.seqText}}</text>
+            <text class="lv-name" style="color:{{lv.locked ? t.onSurfaceVariant : t.onSurface}}">{{lv.title}}</text>
+            <!-- 星级 0~3：三枚 CSS 圆点（不依赖设备字体字形），实心数 = 已得星 -->
+            <div class="lv-dots">
+              <div class="lv-dot" style="background-color:{{lv.stars >= 1 ? t.primary : t.surfaceVariant}}"></div>
+              <div class="lv-dot" style="background-color:{{lv.stars >= 2 ? t.primary : t.surfaceVariant}}"></div>
+              <div class="lv-dot" style="background-color:{{lv.stars >= 3 ? t.primary : t.surfaceVariant}}"></div>
+            </div>
+          </div>
+          <text class="lv-desc" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{lv.desc}}</text>
+          <div class="lv-foot">
+            <text class="lv-reward" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">奖励 {{lv.reward}} 棋币</text>
+            <text class="lv-lock"
+                  style="color:{{lv.locked ? t.onSurfaceVariant : (lv.stars >= 1 ? t.resultWin : t.primary)}};font-size:{{fz.sm}}px">{{lv.locked ? '未解锁' : (lv.stars >= 1 ? '已通关' : '可挑战')}}</text>
+          </div>
+        </div>
+      </div>
+      <!-- 当前筛选无结果时的占位 -->
+      <text class="hint" if="{{rows.length === 0}}" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">本筛选下暂无关卡</text>
+      <!-- 底部让位：胶囊屏底边是半圆，末行卡片滚到底时可以再上抬 40px 完整露出；方屏不需要 -->
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 页面内分类 dock：全部 / 可挑战 / 已通关（只筛选本章关卡） -->
+    <div class="dock dock-3" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="全部" class="dock-item"
+             style="color:{{filter === 'all' ? t.onPrimaryContainer : t.onSurface}};background-color:{{filter === 'all' ? t.primaryContainer : 'transparent'}}"
+             @click="pickFilter('all')" />
+      <input type="button" value="可挑战" class="dock-item"
+             style="color:{{filter === 'todo' ? t.onPrimaryContainer : t.onSurface}};background-color:{{filter === 'todo' ? t.primaryContainer : 'transparent'}}"
+             @click="pickFilter('todo')" />
+      <input type="button" value="已通关" class="dock-item"
+             style="color:{{filter === 'done' ? t.onPrimaryContainer : t.onSurface}};background-color:{{filter === 'done' ? t.primaryContainer : 'transparent'}}"
+             @click="pickFilter('done')" />
+    </div>
+  </div>
+</template>
+
+<style>
+@import './campaign.css';
+@import '../../common/ui.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+var core = require('../../campaign/core.js')
+var store = require('../../campaign/store.js')
+
+// 关卡内子关卡编号（仅内置多关的玩法）：按难度取一个固定关，保证同一闯关关卡每次进同一局面。
+var SUB_LEVEL = {
+  maze: { easy: 3, normal: 10, hard: 18 },
+  spotdiff: { easy: 5, normal: 20, hard: 35 },
+  sokoban: { easy: 3, normal: 10, hard: 18 }
+}
+
+// 输入：玩法 id、难度；输出：子关卡序号（无则 0，页面按 0 视为未指定）。
+function subLevelOf(game, diff) {
+  var m = SUB_LEVEL[game]
+  return m && m[diff] ? m[diff] : 0
+}
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,             // 多屏适配：设计像素页高
+    filter: 'all',
+    isPill: true,           // 胶囊屏：列表尾部需让出底部半圆；方屏为矩形屏，不需要
+    fz: config.fontTokens('normal'),
+    starText: '0/' + core.MAX_STARS,
+    clearText: '0/' + core.TOTAL,
+    pctText: '0%',
+    chapterLabel: '',
+    chapterStarText: '',
+    canPrev: false,
+    canNext: false,
+    rows: []                // 仅当前章 10 行
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    var that = this
+    this.fontBump = 0
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.fontBump = cl.fontBump || 0
+      this.pageH = cl.designH
+      this.isPill = cl.profile !== 'rect'
+      this.refreshFonts()
+    }
+    screen.getLayout().then(function (l) {
+      that.fontBump = l.fontBump || 0
+      that.pageH = l.designH
+      that.isPill = l.profile !== 'rect'
+      that.refreshFonts()
+    })
+    // 非响应式状态：存档、当前章节、是否手动切过章、滚动复位定时器
+    this.campaignState = null
+    this.chapterIdx = 0
+    this.userPickedChapter = false
+    this.scrollTimer = null
+    // 首帧即按空存档渲染：第 1 关解锁、其余锁定，避免读到存档前出现空白列表。
+    // 存档签名与空存档一致时 onShow 不会重复重建（10 行只写一次）。
+    this.campaignSig = '1/0'
+    this.applyState(core.emptyState(), true)
+  },
+
+  // 输入：无；输出：无。手环10 宽胶囊的内联字号增量（CSS 静态字号由媒体查询负责）。
+  refreshFonts() {
+    var s = config.cachedSettings()
+    this.fz = config.fontTokens(s ? s.fontSize : 'normal', this.fontBump)
+  },
+
+  // 从对局页返回也走 onShow：重读存档；无变化不重建当前章。
+  onShow() {
+    var that = this
+    config.loadSettings().then(function (s) {
+      var themed = config.applyTheme(that, s)   // 判重：主题没变不重绑背景图
+      that.reload(themed)
+    })
+  },
+
+  onDestroy() {
+    if (this.scrollTimer) {
+      clearTimeout(this.scrollTimer)
+      this.scrollTimer = null
+    }
+    this.campaignState = null
+  },
+
+  // 输入：force（主题变化时强制重建，行内配色由模板绑定 t 自动刷新）；输出：无。
+  reload(force) {
+    var that = this
+    store.loadCampaign().then(function (state) {
+      // 星级只会增长，故「解锁进度 + 总星数」即可唯一标识展示状态
+      var sig = state.unlocked + '/' + core.totalStars(state)
+      if (!force && sig === that.campaignSig) return
+      // 首次读到进度 / 通关后返回：自动跳到进度所在章；玩家手动切过章则尊重其选择
+      var jump = !that.userPickedChapter
+      that.campaignSig = sig
+      that.applyState(state, jump)
+    })
+  },
+
+  // 输入：闯关状态、是否跳到进度章；输出：无（更新总览并只重建当前章）。
+  applyState(state, jump) {
+    this.campaignState = state
+    var sm = core.summary(state)
+    this.starText = sm.stars + '/' + sm.maxStars
+    this.clearText = sm.cleared + '/' + sm.total
+    this.pctText = sm.total > 0 ? Math.round(sm.cleared * 100 / sm.total) + '%' : '0%'
+    if (jump) this.chapterIdx = Math.floor((state.unlocked - 1) / 10)
+    var max = core.CHAPTERS.length - 1
+    if (!(this.chapterIdx >= 0)) this.chapterIdx = 0
+    if (this.chapterIdx > max) this.chapterIdx = max
+    this.renderChapter()
+  },
+
+  // 输入：无；输出：无（仅写入当前章的 10 行与章节标题）。
+  renderChapter() {
+    var state = this.campaignState || core.emptyState()
+    var ch = core.chapterAt(state, this.chapterIdx)
+    if (!ch) return
+    var rows = []
+    for (var k = 0; k < ch.rows.length; k++) {
+      var lv = ch.rows[k]
+      rows.push({
+        id: lv.id,
+        game: lv.game,
+        mode: lv.mode,
+        difficulty: lv.difficulty,
+        title: lv.title,
+        desc: lv.desc,
+        reward: lv.reward,
+        stars: lv.stars,
+        locked: lv.locked,
+        seqText: (lv.index < 10 ? '0' : '') + lv.index
+      })
+    }
+    this.allRows = rows
+    this.applyFilter()
+    this.chapterLabel = '第' + ch.id + '章 · ' + ch.name
+    this.chapterStarText = '星 ' + ch.stars + '/' + (ch.total * 3)
+    this.canPrev = this.chapterIdx > 0
+    this.canNext = this.chapterIdx < core.CHAPTERS.length - 1
+  },
+
+  prevChapter() { this.switchChapter(-1) },
+  nextChapter() { this.switchChapter(1) },
+
+  // 输入：章节增量（-1 / +1）；输出：无。切章后把列表滚回顶部，避免停在上一章的滚动位置。
+  switchChapter(d) {
+    var next = this.chapterIdx + d
+    if (next < 0 || next >= core.CHAPTERS.length) return
+    this.chapterIdx = next
+    this.userPickedChapter = true
+    this.renderChapter()
+    this.scrollToTop()
+  },
+
+  scrollToTop() {
+    var that = this
+    if (this.scrollTimer) clearTimeout(this.scrollTimer)
+    // 数据改动到渲染是异步的：新章行尚未上屏时 scrollTo 会静默失败，故留 80ms
+    this.scrollTimer = setTimeout(function () {
+      that.scrollTimer = null
+      try {
+        that.$element('list').scrollTo({ left: 0, top: 0, behavior: 'auto' })
+      } catch (e) {}
+    }, 80)
+  },
+
+  // 输入：行下标；输出：无。
+  // 已解锁 → 对应玩法页（config 有 page）或 pages/game（带 type），统一带 campaignId。
+  openLevel(li) {
+    var lv = this.rows[li]
+    if (!lv || lv.locked) return
+    var params = {
+      campaignId: lv.id,
+      campaignDiff: lv.difficulty || 'normal',
+      campaignMode: lv.mode || 'ai'
+    }
+    var sub = subLevelOf(lv.game, lv.difficulty)
+    if (sub) params.campaignLevel = sub
+    var g = config.getGame(lv.game)
+    if (g && g.page) {
+      router.push({ uri: g.page, params: params })
+      return
+    }
+    params.type = lv.game
+    router.push({ uri: 'pages/game', params: params })
+  },
+
+  // 页面内筛选：全部 / 可挑战（未锁且未通关）/ 已通关
+  pickFilter(k) {
+    if (k === this.filter) return
+    this.filter = k
+    this.applyFilter()
+  },
+
+  applyFilter() {
+    var out = []
+    for (var i = 0; i < this.allRows.length; i++) {
+      var r = this.allRows[i]
+      if (this.filter === 'todo' && (r.locked || r.stars >= 1)) continue
+      if (this.filter === 'done' && r.stars < 1) continue
+      out.push(r)
+    }
+    this.rows = out
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

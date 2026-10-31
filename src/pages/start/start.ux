@@ -1,0 +1,59 @@
+
+<template>
+  <div class="page" @click="enter">
+    <!-- 启动页**固定深色**（2026-10-23：玩家反馈「黑白夜模式一闪一闪」）。
+         原因：存储是异步的，首帧时 theme.current() 还是默认紫/深 —— 若启动页跟随用户主题，
+         浅色用户会先看到深色一帧再闪成浅色。品牌启动页固定深色是常规做法，
+         进入主页时才按用户主题渲染（主页/其它页由 config.seedTheme 保证首帧就是对的）。 -->
+    <image class="logo-img" src="/common/img/brand.png"></image>
+    <text class="name" style="color:#E6E1E5">驭棋沙盘</text>
+    <text class="sub" style="color:#CAC4D0">八种玩法 · 随时开局</text>
+    <text class="hint" style="color:#CAC4D0">轻触任意位置开始</text>
+  </div>
+</template>
+
+<style>
+@import './start.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var screen = global.YQ.screen
+
+export default {
+  data: {
+    pageH: 490
+  },
+  onInit() {
+    var that = this
+    var cl = screen.cachedLayout()
+    if (cl) this.pageH = cl.designH
+    screen.getLayout().then(function (l) {
+      that.pageH = l.designH
+    })
+    // 只做「预热」：把设置读进 config 的同步快照并 remember 配色，
+    // 让主页/后续页面首帧就能用对主题（不在这里赋值任何颜色：启动页固定深色）。
+    config.loadSettings()
+    this.timer = setTimeout(function () {
+      that.enter()
+    }, 1600)
+  },
+  // 输入：无；输出：无。跳过与自动进入共用，防重复跳转。
+  enter() {
+    if (this.done) return
+    this.done = true
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    router.replace({ uri: 'pages/index' })
+  },
+  onDestroy() {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+  }
+}
+</script>

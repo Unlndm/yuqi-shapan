@@ -1,0 +1,568 @@
+<!--
+  pages/slide — 数字华容道（3×3 滑块拼图）页。
+  职责：渲染棋盘（9 个固定块）+ 步数/最少步数 + 洗牌重开，驱动规则层（rules/slide.js）并做演出。
+  规则逻辑全部在 rules/slide.js（纯数据 + 随机数可注入）；页面只管：驱动挪动、尺寸微脉冲、弹窗、震动。
+  渲染约定（本平台约束，沿用 g2048 页已验证的写法）：
+    · 9 个格子写死为 k0..k8 各自绑定字段，**不用 for 循环渲染**（该平台循环模板 + 动态索引会漏刷且开销大）；
+    · 点击热区用 <div>（本工程真机验证过的写法），数字用其中的 <text> 渲染 —— 不把 click 直接压在 <text> 上；
+    · 交互只有「点与空位紧邻的块」一种，**不自绘 swipe/drag**（自绘触摸会吞掉系统侧滑返回手势）；
+    · 所有按钮显式内联 background-color 与 border-color（本工程要求）；其余形状写进 slide.css。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏（全应用统一口径）：圆形返回键「＜」+ 右侧两行状态（主数值 / 纪录） -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{fz.md}}px">步数 {{moves}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{bestLabel}}</text>
+      </div>
+    </div>
+
+    <!-- 棋盘：9 个固定块，各自字段绑定；「与空位紧邻、可挪」的块描边用主题 primary 提示 -->
+    <div class="board" style="left:{{bx}}px;top:{{by}}px;width:{{bs}}px;height:{{bs}}px;background-color:{{boardBg}};border-color:{{t.outline}}"
+         @touchstart="onTouchStart" @touchend="onTouchEnd" @touchmove="noop">
+      <div class="tile" style="left:{{k0.l}}px;top:{{k0.t}}px;width:{{k0.w}}px;height:{{k0.w}}px;background-color:{{k0.bg}};border-color:{{k0.bd}}" @click="tap0">
+        <text class="tilev" style="color:{{k0.fg}};font-size:{{k0.fs}}px;line-height:{{k0.lh}}px">{{k0.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k1.l}}px;top:{{k1.t}}px;width:{{k1.w}}px;height:{{k1.w}}px;background-color:{{k1.bg}};border-color:{{k1.bd}}" @click="tap1">
+        <text class="tilev" style="color:{{k1.fg}};font-size:{{k1.fs}}px;line-height:{{k1.lh}}px">{{k1.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k2.l}}px;top:{{k2.t}}px;width:{{k2.w}}px;height:{{k2.w}}px;background-color:{{k2.bg}};border-color:{{k2.bd}}" @click="tap2">
+        <text class="tilev" style="color:{{k2.fg}};font-size:{{k2.fs}}px;line-height:{{k2.lh}}px">{{k2.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k3.l}}px;top:{{k3.t}}px;width:{{k3.w}}px;height:{{k3.w}}px;background-color:{{k3.bg}};border-color:{{k3.bd}}" @click="tap3">
+        <text class="tilev" style="color:{{k3.fg}};font-size:{{k3.fs}}px;line-height:{{k3.lh}}px">{{k3.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k4.l}}px;top:{{k4.t}}px;width:{{k4.w}}px;height:{{k4.w}}px;background-color:{{k4.bg}};border-color:{{k4.bd}}" @click="tap4">
+        <text class="tilev" style="color:{{k4.fg}};font-size:{{k4.fs}}px;line-height:{{k4.lh}}px">{{k4.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k5.l}}px;top:{{k5.t}}px;width:{{k5.w}}px;height:{{k5.w}}px;background-color:{{k5.bg}};border-color:{{k5.bd}}" @click="tap5">
+        <text class="tilev" style="color:{{k5.fg}};font-size:{{k5.fs}}px;line-height:{{k5.lh}}px">{{k5.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k6.l}}px;top:{{k6.t}}px;width:{{k6.w}}px;height:{{k6.w}}px;background-color:{{k6.bg}};border-color:{{k6.bd}}" @click="tap6">
+        <text class="tilev" style="color:{{k6.fg}};font-size:{{k6.fs}}px;line-height:{{k6.lh}}px">{{k6.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k7.l}}px;top:{{k7.t}}px;width:{{k7.w}}px;height:{{k7.w}}px;background-color:{{k7.bg}};border-color:{{k7.bd}}" @click="tap7">
+        <text class="tilev" style="color:{{k7.fg}};font-size:{{k7.fs}}px;line-height:{{k7.lh}}px">{{k7.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k8.l}}px;top:{{k8.t}}px;width:{{k8.w}}px;height:{{k8.w}}px;background-color:{{k8.bg}};border-color:{{k8.bd}}" @click="tap8">
+        <text class="tilev" style="color:{{k8.fg}};font-size:{{k8.fs}}px;line-height:{{k8.lh}}px">{{k8.v}}</text>
+      </div>
+      <!-- 4×4 档另用 7 个块（3×3 档不渲染，避免 0 尺寸 div 仍画出 1px 描边） -->
+      <block if="{{size === 4}}">
+      <div class="tile" style="left:{{k9.l}}px;top:{{k9.t}}px;width:{{k9.w}}px;height:{{k9.w}}px;background-color:{{k9.bg}};border-color:{{k9.bd}}" @click="tap9">
+        <text class="tilev" style="color:{{k9.fg}};font-size:{{k9.fs}}px;line-height:{{k9.lh}}px">{{k9.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k10.l}}px;top:{{k10.t}}px;width:{{k10.w}}px;height:{{k10.w}}px;background-color:{{k10.bg}};border-color:{{k10.bd}}" @click="tap10">
+        <text class="tilev" style="color:{{k10.fg}};font-size:{{k10.fs}}px;line-height:{{k10.lh}}px">{{k10.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k11.l}}px;top:{{k11.t}}px;width:{{k11.w}}px;height:{{k11.w}}px;background-color:{{k11.bg}};border-color:{{k11.bd}}" @click="tap11">
+        <text class="tilev" style="color:{{k11.fg}};font-size:{{k11.fs}}px;line-height:{{k11.lh}}px">{{k11.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k12.l}}px;top:{{k12.t}}px;width:{{k12.w}}px;height:{{k12.w}}px;background-color:{{k12.bg}};border-color:{{k12.bd}}" @click="tap12">
+        <text class="tilev" style="color:{{k12.fg}};font-size:{{k12.fs}}px;line-height:{{k12.lh}}px">{{k12.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k13.l}}px;top:{{k13.t}}px;width:{{k13.w}}px;height:{{k13.w}}px;background-color:{{k13.bg}};border-color:{{k13.bd}}" @click="tap13">
+        <text class="tilev" style="color:{{k13.fg}};font-size:{{k13.fs}}px;line-height:{{k13.lh}}px">{{k13.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k14.l}}px;top:{{k14.t}}px;width:{{k14.w}}px;height:{{k14.w}}px;background-color:{{k14.bg}};border-color:{{k14.bd}}" @click="tap14">
+        <text class="tilev" style="color:{{k14.fg}};font-size:{{k14.fs}}px;line-height:{{k14.lh}}px">{{k14.v}}</text>
+      </div>
+      <div class="tile" style="left:{{k15.l}}px;top:{{k15.t}}px;width:{{k15.w}}px;height:{{k15.w}}px;background-color:{{k15.bg}};border-color:{{k15.bd}}" @click="tap15">
+        <text class="tilev" style="color:{{k15.fg}};font-size:{{k15.fs}}px;line-height:{{k15.lh}}px">{{k15.v}}</text>
+      </div>
+      </block>
+    </div>
+
+    <!-- 底部一行两枚（与棋盘等宽对半分）：洗牌重开 / 档位 -->
+    <input type="button" class="ngbtn" value="洗牌重开"
+           style="left:{{btnL}}px;top:{{btnT}}px;width:{{btnW}}px;height:{{btnH}}px;font-size:{{sf}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+           @click="newGame" />
+    <!-- 档位切换（3×3 / 4×4）：按钮上显示当前档，点了切到另一档并开新局 -->
+    <input type="button" class="szbtn" value="{{sizeLabel}}"
+           style="left:{{szL}}px;top:{{szT}}px;width:{{szW}}px;height:{{szH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+           @click="tapSize" />
+
+    <!-- 弹窗（同一时刻只弹一个：dlg 单字段驱动） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">拼好了</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">共用 {{moves}} 步 · {{bestLabel}}</text>
+          <text class="modal-sub" if="{{campaignNote}}" style="color:{{t.primary}}">{{campaignNote}}</text>
+          <input type="button" class="m-btn" value="再来一局"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="newGame" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+        <!-- 切档确认（防误触丢掉正在进行的这局） -->
+        <block if="{{dlg === 'size'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">切到 {{nextSizeLabel}}？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">当前这局会重开，已用 {{moves}} 步不保留</text>
+          <input type="button" class="m-btn" value="切 换"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="confirmSize" />
+          <input type="button" class="m-btn" value="取 消"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="cancelSize" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './slide.css';
+</style>
+
+<script>
+/**
+ * 数字华容道页脚本。
+ * 规则状态在 this.st（rules/slide.js 产出的纯数据）；页面只做「驱动 + 演出」。
+ * 最少步数用 @system.storage（经 utils/config 的 pref 接口）持久化，**按档位各记一份**：
+ *   3×3 用 slide_best（旧键，不迁移）、4×4 用 slide_best_4；档位本身存 slide_size。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var slideFactory = require('../../rules/slide.js')
+var economy = global.YQ.economy
+var rng = global.YQ.rng
+
+var GRID_GAP = 3           // 块间缝（与两棋棋盘同口径）
+
+// 输入：块值、格边长；输出：字号（1 位数最大，保证 8 也饱满可辨）。
+function tileFont(v, w) {
+  return Math.max(12, Math.round(w * 0.46))
+}
+
+// 输入：格号（0~8）；输出：首帧占位（布局算完即被覆盖）。
+function defTile(i) {
+  var col = i % 3
+  var row = Math.floor(i / 3)
+  return { l: col * 59, t: row * 59, w: 56, v: '', fs: 26, lh: 56 }
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    moves: 0,
+    best: 0,
+    bestLabel: '最少 —',
+    dlg: '',
+    boardBg: themeMod.current().boardBg,
+    slotBg: themeMod.current().surfaceContainer,
+    tileBg: themeMod.current().surfaceContainerHigh,
+    padX: 8, topY: 58, topH: 44, hudW: 176, sf: 12, navSize: 44, navFont: 20, navR: 22,
+    fz: config.fontTokens('normal'),
+    isPill: true,
+    bx: 9, by: 157, bs: 176,
+    btnL: 8, btnT: 341, btnW: 176, btnH: 36,
+    // 档位（3×3 / 4×4）：首帧占位，layout 每次重算；k9~k15 只在 4×4 档渲染
+    size: 3, sizeLabel: '3×3', nextSizeLabel: '4×4',
+    szL: 92, szT: 341, szW: 92, szH: 36,
+    k0: defTile(0), k1: defTile(1), k2: defTile(2),
+    k3: defTile(3), k4: defTile(4), k5: defTile(5),
+    k6: defTile(6), k7: defTile(7), k8: defTile(8),
+    k9: defTile(9), k10: defTile(10), k11: defTile(11),
+    k12: defTile(12), k13: defTile(13), k14: defTile(14), k15: defTile(15)
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    this.timers = []
+    this.cell = 56
+    this.n = 3
+    this.gx = []
+    this.gy = []
+    this.moves = 0
+    this.best = 0
+    // 每日挑战：种子驱动洗牌；普通局不创建 RNG（randFn 返回 undefined → Math.random）
+    this.isChallenge = Number(this.challenge) === 1
+    // 闯关模式：固定 3×3 档（关卡阈值按 3×3 设计）
+    this.isCampaign = !!this.campaignId
+    this.campaignNote = ''
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'slide')
+      this.dailyRng = rng.create(seedNum)
+    }
+    var that = this
+    // 档位与「各档独立最少步数」都从存储恢复：3×3 沿用旧键 slide_best（不迁移），4×4 用 slide_best_4
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('slide_size', 3),
+      config.getPref('slide_best', 0),
+      config.getPref('slide_best_4', 0)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.size = (that.isChallenge || that.isCampaign) ? 3 : (vals[1] === 4 ? 4 : 3)
+      that.bestMap = {
+        3: typeof vals[2] === 'number' && vals[2] > 0 ? vals[2] : 0,
+        4: typeof vals[3] === 'number' && vals[3] > 0 ? vals[3] : 0
+      }
+      that.best = that.bestMap[that.size]
+      that.g = slideFactory.create(that.size)
+      that.st = that.g.newGame(that.randFn())
+      that.syncSizeLabels()
+      that.layout()
+      that.syncBest()
+      that.applyTheme()
+    })
+    config.loadSettings().then(function (s) {
+      var changed = config.applyTheme(that, s)   // 判重：没变就不重设背景图（会闪空白帧）
+      if (changed) that.applyTheme()
+      haptic.applySettings(s)
+    })
+  },
+
+  // 输入：无；输出：规则层 rand（挑战 = 种子派生的函数；普通 = undefined → Math.random）。
+  randFn() {
+    var r = this.dailyRng
+    if (!r) return undefined
+    return function () { return r.next() }
+  },
+
+  // 档位文案：「当前档」显示在档位按钮上，「要切到的档」显示在切档确认弹窗标题里
+  syncSizeLabels() {
+    this.sizeLabel = this.size === 3 ? '3×3' : '4×4'
+    this.nextSizeLabel = this.size === 3 ? '4×4' : '3×3'
+  },
+
+  // 输入：档位；输出：该档「最少步数」的存储键（3×3 沿用旧键，避免老纪录丢失）
+  bestKey(s) {
+    return s === 4 ? 'slide_best_4' : 'slide_best'
+  },
+
+  // 页面配色：棋盘底 / 空位 / 块面都跟主题走（MD3 配对的「底—字」组合，对比度已在 theme.js 核过）
+  // 几何未就绪（布局还没跑）时只换色不写坐标，交给 layout 后的那次 applyTheme 统一写。
+  applyTheme() {
+    var t = this.t
+    this.boardBg = t.boardBg
+    this.slotBg = t.surfaceContainer
+    this.tileBg = t.surfaceContainerHigh
+    if (!this.gx || !this.gx.length) return
+    var b = this.st.tiles
+    var mov = this.g.movable(this.st)
+    for (var i = 0; i < 9; i++) this.writeTile(i, b[i], mov.indexOf(i) >= 0, -1)
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() { screen.keepScreenOn(true) },
+  onHide() { screen.keepScreenOn(false) },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimers()
+    this.timers = null
+  },
+
+  // 有弹窗先关弹窗；无弹窗才离屏（返回拦截语义与 g2048 页一致）
+  // 手势模式：侧滑返回一律吞掉，避免滑动方块时误触退出；退出只走左上角返回键。
+  onBackPress() {
+    if (this.dlg !== '') { this.dlg = ''; return true }
+    return true
+  },
+
+  onTouchStart(e) {
+    var t = e && e.touches && e.touches[0]
+    if (!t) return
+    this.touchX = (t.clientX !== undefined) ? t.clientX : t.x
+    this.touchY = (t.clientY !== undefined) ? t.clientY : t.y
+  },
+
+  onTouchEnd(e) {
+    var t = e && e.changedTouches && e.changedTouches[0]
+    if (!t || this.touchX === undefined) return
+    var x = (t.clientX !== undefined) ? t.clientX : t.x
+    var y = (t.clientY !== undefined) ? t.clientY : t.y
+    var dx = x - this.touchX
+    var dy = y - this.touchY
+    this.touchX = undefined
+    this.touchY = undefined
+    var ax = dx < 0 ? -dx : dx
+    var ay = dy < 0 ? -dy : dy
+    if (ax < 24 && ay < 24) return
+    if (ax > ay) {
+      // 手势方向 = 方块移动方向：左滑时把空位右侧的块移进空位。
+      if (dx > 0) this.swipeTile(-1)
+      else this.swipeTile(1)
+    } else {
+      if (dy > 0) this.swipeTile(-3)
+      else this.swipeTile(3)
+    }
+  },
+
+  // 滑动方向 → 空位另一侧的方块；不邻接就不动。
+  swipeTile(delta) {
+    var blank = this.st.blank
+    var from = blank + delta
+    if (from < 0 || from > 8) return
+    var br = Math.floor(blank / 3)
+    var bc = blank % 3
+    var fr = Math.floor(from / 3)
+    var fc = from % 3
+    if (Math.abs(br - fr) + Math.abs(bc - fc) !== 1) return
+    this.onTap(from)
+  },
+
+  // 本页延时统一走自持定时器数组，离屏/销毁时清空，避免裸 setTimeout 常驻。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 棋盘是正方形（3×3 或 4×4，缝宽固定）：先扣顶栏、底部按钮行与留白，余量给棋盘，再按宽度上限收敛。
+  layout() {
+    var uiS = this.uiS || 1
+    var compact = this.pageH < 340
+    // 胶囊屏（跑道屏）顶部安全区：短边是半圆，外接圆半径 R ≈ 屏宽/2 = 96 设计像素，
+    // 在高度 y 处可见区左边界 xmin = R − √(R² − (R − y)²)。顶栏最左件是「返回」按钮（左沿 x=8），
+    // 代入得 y ≥ 57.6 → 取 58（⚠️ 真机截图取证：顶部浮层按 y≈2 放置会被屏幕圆角切掉）。
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    var topH = compact ? 26 : Math.max(24, Math.round(34 * uiS))
+    var btnH = compact ? 26 : Math.max(26, Math.round(36 * uiS))
+    // 顶栏高度 = 圆形返回键边长（全应用统一口径，见 utils/metrics.js）
+    var navG = metrics.nav(uiS, compact)
+    topH = navG.size
+    var midGap = compact ? 6 : 10
+    var bottomPad = compact ? 6 : 4
+    // 档位（本轮新增）：4×4 时格数 16、边长按 4 列反推
+    var n = this.size === 4 ? 4 : 3
+
+    var maxSideW = 192 - 2 * this.padX
+    var budget = this.pageH - topY - topH - btnH - midGap * 2 - bottomPad
+    var side = Math.max(48, Math.min(maxSideW, budget))
+    var cell = Math.floor((side - (n - 1) * GRID_GAP) / n)
+    if (cell < 12) cell = 12
+    var boardSide = cell * n + (n - 1) * GRID_GAP
+    var boxSide = boardSide + 2          // +2：棋盘 1px 描边各占一边
+    var slack = this.pageH - (topY + topH + midGap + boardSide + midGap + btnH + bottomPad)
+    if (slack < 0) slack = 0
+
+    this.cell = cell
+    this.n = n
+    this.topY = topY
+    this.topH = topH
+    this.hudW = maxSideW
+    this.sf = (compact ? 12 : Math.max(11, Math.round(12 * uiS))) + (this.fontBump || 0)     // 底部「洗牌重开 / 档位」按钮字号
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+    this.bx = Math.round((192 - boxSide) / 2)
+    this.by = topY + topH + midGap + Math.round(slack / 2)
+    this.bs = boxSide
+    this.btnT = this.by + boardSide + midGap
+    this.btnH = btnH
+    // 底部一行两枚：整宽被拆成「洗牌重开」与「档位」，两枚都够大（胶囊屏单列/大按钮口径）
+    var gap2 = 4
+    var half = Math.floor((boxSide - gap2) / 2)
+    this.btnL = Math.round((192 - boxSide) / 2)
+    this.btnW = half
+    this.szL = this.btnL + half + gap2
+    this.szW = boxSide - half - gap2
+    this.szT = this.btnT
+    this.szH = btnH
+
+    var gx = []
+    var gy = []
+    for (var i = 0; i < n * n; i++) {
+      gx.push(Math.round((i % n) * (cell + GRID_GAP)))
+      gy.push(Math.round(Math.floor(i / n) * (cell + GRID_GAP)))
+    }
+    this.gx = gx
+    this.gy = gy
+  },
+
+  // ── 渲染 ────────────────────────────────────────────────────────
+  // 输入：格号、块值、是否可挪、脉冲格号（-1 = 无）；输出：无。
+  // 只在字段真的变化时写回（省一次无谓更新）；脉冲格临时 +3px 且位置 -1px（居中鼓包）。
+  writeTile(i, v, movable, pulseIdx) {
+    var key = 'k' + i
+    var cell = this.cell
+    var w = cell
+    var l = this.gx[i]
+    var tp = this.gy[i]
+    if (i === pulseIdx) { w = cell + 3; l = l - 1; tp = tp - 1 }
+    var nx = {
+      l: l, t: tp, w: w,
+      v: v > 0 ? v : '',
+      fs: v > 0 ? tileFont(v, w) : 0,
+      lh: w,
+      bg: v > 0 ? this.tileBg : this.slotBg,
+      fg: this.t.onSurface,
+      bd: movable ? this.t.primary : this.t.outline
+    }
+    if (this.sameTile(this[key], nx)) return
+    this[key] = nx
+  },
+
+  // 输入：当前块对象、下一块对象；输出：字段是否完全一致。
+  sameTile(a, b) {
+    return !!a && a.l === b.l && a.t === b.t && a.w === b.w && a.v === b.v &&
+      a.fs === b.fs && a.lh === b.lh && a.bg === b.bg && a.fg === b.fg && a.bd === b.bd
+  },
+
+  // 输入：需要「尺寸微脉冲」的格号数组（空数组 = 全部复位）；输出：无。
+  syncTiles(pulseIdx) {
+    if (!this.gx || !this.gx.length) return
+    var b = this.st.tiles
+    var mov = this.g.movable(this.st)
+    var one = pulseIdx.length ? pulseIdx[0] : -1
+    var count = (this.n || 3) * (this.n || 3)
+    for (var i = 0; i < count; i++) this.writeTile(i, b[i], mov.indexOf(i) >= 0, one)
+  },
+
+  // 输入：无；输出：无。刷新「最少 N 步」文案。
+  syncBest() {
+    this.bestLabel = this.best > 0 ? '最少 ' + this.best + ' 步' : '最少 —'
+  },
+
+  // ── 操作 ────────────────────────────────────────────────────────
+  // 每格一个零参方法（模板不传参；本平台只验证过零参方法绑定）：3×3 用 tap0~tap8，4×4 另加 tap9~tap15
+  tap0() { this.onTap(0) },
+  tap1() { this.onTap(1) },
+  tap2() { this.onTap(2) },
+  tap3() { this.onTap(3) },
+  tap4() { this.onTap(4) },
+  tap5() { this.onTap(5) },
+  tap6() { this.onTap(6) },
+  tap7() { this.onTap(7) },
+  tap8() { this.onTap(8) },
+  tap9() { this.onTap(9) },
+  tap10() { this.onTap(10) },
+  tap11() { this.onTap(11) },
+  tap12() { this.onTap(12) },
+  tap13() { this.onTap(13) },
+  tap14() { this.onTap(14) },
+  tap15() { this.onTap(15) },
+
+  // 输入：格号；输出：无。点空位 / 点不相邻的块 → 只有一下「无效」震动，不动盘面、不计步数。
+  onTap(i) {
+    if (this.dlg !== '') return
+    var hole = this.st.blank
+    var r = this.g.tap(this.st, i)
+    if (!r.moved) { haptic.invalid(); return }
+    this.st = r.state
+    this.moves = r.state.moves
+    haptic.place()
+    // 落进空位的那一块做一次尺寸微脉冲（hole = 挪动前的空位）
+    this.syncTiles([hole])
+    var that = this
+    this.after(130, function () { if (that.gx) that.syncTiles([]) })
+    if (r.state.solved) {
+      // 纪录按档位各记一份（3×3 沿用旧键 slide_best，4×4 用 slide_best_4）
+      if (this.best === 0 || this.moves < this.best) {
+        this.best = this.moves
+        if (!this.bestMap) this.bestMap = {}
+        this.bestMap[this.size] = this.best
+        config.saveSetting(this.bestKey(this.size), this.best)
+      }
+      this.syncBest()
+      if (this.isChallenge) economy.completeDaily('slide')
+      if (this.isCampaign) {
+        // 按需加载：普通对局不把闯关关卡数据读进内存
+        var campaign = global.YQ.campaignReport
+        campaign.report(this.campaignId, { win: true, steps: this.moves }).then(function (info) {
+          that.campaignNote = info && info.text ? info.text : ''
+        })
+      }
+      this.after(240, function () {
+        if (!that.timers) return
+        that.dlg = 'win'
+        haptic.celebrate()
+      })
+    }
+  },
+
+  // ── 档位切换（3×3 / 4×4） ──────────────────────────────────────
+  // 已经挪过步数就弹确认（防止误触丢掉进行中的这局），没动过直接切。
+  tapSize() {
+    if (this.dlg !== '') return
+    if (this.isChallenge) return   // 挑战固定 3×3 档，保证同日局面可复现
+    if (this.moves > 0) { this.dlg = 'size'; return }
+    this.switchSize()
+  },
+
+  confirmSize() {
+    this.dlg = ''
+    this.switchSize()
+  },
+
+  cancelSize() { this.dlg = '' },
+
+  // 换档 = 换引擎实例（3×3/4×4 的棋盘与最少步数纪录都不同）+ 开新局；选择落盘（slide_size）
+  switchSize() {
+    if (this.isChallenge) return   // 挑战固定档位，不参与切档
+    this.size = this.size === 3 ? 4 : 3
+    config.saveSetting('slide_size', this.size)
+    if (!this.bestMap) this.bestMap = {}
+    this.best = this.bestMap[this.size] || 0
+    this.g = slideFactory.create(this.size)
+    this.st = this.g.newGame()
+    this.moves = 0
+    this.syncSizeLabels()
+    this.layout()
+    this.syncBest()
+    this.syncTiles([])
+    haptic.place()
+  },
+
+  newGame() {
+    this.dlg = ''
+    this.st = this.g.newGame(this.randFn())
+    this.moves = 0
+    this.syncBest()
+    this.syncTiles([])
+    haptic.place()
+  },
+
+  back() {
+    this.dlg = ''
+    this.clearTimers()
+    router.back()
+  },
+
+  // 点蒙层只关「拼好了」弹窗（与 g2048 页一致，避免误触）
+  onMask() {
+    if (this.dlg !== 'win') return
+    this.dlg = ''
+  },
+
+  noop() {}
+}
+</script>

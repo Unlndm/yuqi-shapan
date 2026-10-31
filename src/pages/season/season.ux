@@ -1,0 +1,571 @@
+<!--
+  pages/season — 赛季 / 棋币 / 商店。
+  职责：展示当前赛季标题与棋币余额；赛季任务进度与领取；用棋币购买局内道具。
+  数据与结算规则在 utils/economy-core.js（纯函数，有测试）+ utils/economy.js（storage 封装）。
+  入口：主页顶部「赛季 · 棋币」条。
+  赛季「随更新来」：每次发版手动改 SEASON_ID，进度与领取记录自动重置。
+-->
+<template>
+  <div class="page" style="padding-bottom:0px;background-color:{{t.pageBg}}">
+
+    <div class="topbar" style="border-bottom-color:{{t.hairline}}">
+      <text class="top-coins" style="color:{{t.primary}}">{{coins}} 棋币</text>
+      <text class="title" style="color:{{t.onSurface}}">赛季</text>
+      <input type="button" value="＜" class="back-fab"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="goBack" />
+    </div>
+
+    <scroll class="body" id="body" scroll-y="true" bounces="false">
+      <!-- 赛季头与说明不再重复：主页赛季卡已经展示过赛季名 / 棋币与领取规则。
+           本页只保留顶栏右侧的紧凑棋币，正文直接从「每日挑战」开始。 -->
+      <block if="{{tab === 'daily'}}">
+      <!-- 每日挑战：玩法 / 种子按本地日期轮换，同日进同一局；首次完成自动发币 -->
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">每日挑战</text>
+      <div class="daily-card" style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="daily-top">
+          <text class="daily-name" style="color:{{t.onSurface}}">今日 · {{daily.name}}</text>
+          <text class="daily-streak" style="color:{{t.primary}}">连续 {{daily.streak}} 天</text>
+        </div>
+        <!-- 页面只在胜利/通关时上报每日挑战，故目标写「赢得/通关一局」，避免「完成一局」被误解为输局也算 -->
+        <text class="daily-goal" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">目标 赢得/通关一局{{daily.name}} · 奖励 {{daily.reward}} 棋币</text>
+        <div class="daily-foot">
+          <text class="daily-status" style="color:{{daily.statusColor}}">{{daily.statusText}}</text>
+          <text class="daily-btn" style="background-color:{{daily.btnBg}};border-color:{{daily.btnBg}};color:{{daily.btnFg}}"
+                @click="dailyAction">{{daily.btnText}}</text>
+        </div>
+      </div>
+
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">终身成就</text>
+      <input type="button" class="ach-entry" value="成就 {{achText}}"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+             @click="openAchievements" />
+
+      <!-- 闯关：60 关 6 章，显示通关数与总星数 -->
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">闯关模式</text>
+      <input type="button" class="ach-entry" value="闯关 {{campaignText}}"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+             @click="openCampaign" />
+
+      <!-- 残局：30 题（象棋 / 五子棋 / 围棋各 10），显示已完成数并进列表页 -->
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">残局挑战</text>
+      <input type="button" class="ach-entry" value="残局 {{puzzleText}}"
+             style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+             @click="openPuzzles" />
+      </block>
+
+      <block if="{{tab === 'tasks'}}">
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">赛季任务 · 已领 {{taskDoneText}}</text>
+      <div class="task-row" for="{{(ti, task) in tasks}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="task-main">
+          <text class="task-name" style="color:{{task.nameColor}}">{{task.name}}</text>
+          <text class="task-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">进度 {{task.text}} · 奖励 {{task.reward}} 棋币</text>
+          <div class="task-track" style="background-color:{{t.surfaceVariant}}">
+            <div class="task-fill" style="width:{{task.pctW}}px;background-color:{{task.barColor}}"></div>
+          </div>
+        </div>
+        <text class="task-btn" style="background-color:{{task.btnBg}};border-color:{{task.btnBg}};color:{{task.btnFg}}"
+              @click="claimTask(ti)">{{task.btnText}}</text>
+      </div>
+      </block>
+
+      <block if="{{tab === 'shop'}}">
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">赛季商店</text>
+      <div class="shop-row" for="{{(si, item) in items}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="shop-main">
+          <text class="shop-name" style="color:{{t.onSurface}}">{{item.name}}（{{item.count}}）</text>
+          <text class="shop-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{item.desc}}</text>
+        </div>
+        <text class="task-btn" style="background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}};color:{{t.onPrimaryContainer}}"
+              @click="askBuy(si)">买入 {{item.price}}</text>
+      </div>
+      </block>
+
+      <block if="{{tab === 'skin'}}">
+      <!-- 皮肤：四类共 10 套（底色为两档纯色），买入 / 装备后立即写入皮肤存档 -->
+      <text class="sec-label" style="color:{{t.onSurfaceVariant}}">皮肤 · 已拥有 {{skinOwnedText}}</text>
+      <div class="skin-row" for="{{(ki, sk) in skins}}"
+           style="background-color:{{t.cardBg}};border-color:{{t.hairline}}">
+        <div class="skin-main">
+          <text class="skin-name" style="color:{{sk.nameColor}}">{{sk.name}}</text>
+          <text class="skin-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{sk.sub}}</text>
+        </div>
+        <text class="task-btn" style="background-color:{{sk.btnBg}};border-color:{{sk.btnBg}};color:{{sk.btnFg}}"
+              @click="skinAction(ki)">{{sk.btnText}}</text>
+      </div>
+      </block>
+      <div class="dock-pad"></div>
+    </scroll>
+
+    <!-- 页面内分类 dock：每日 / 任务 / 商店 / 皮肤（只切换本页内容，不做全局导航） -->
+    <div class="dock" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}">
+      <input type="button" value="每日" class="dock-item"
+             style="color:{{tab === 'daily' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'daily' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('daily')" />
+      <input type="button" value="任务" class="dock-item"
+             style="color:{{tab === 'tasks' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'tasks' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('tasks')" />
+      <input type="button" value="商店" class="dock-item"
+             style="color:{{tab === 'shop' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'shop' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('shop')" />
+      <input type="button" value="皮肤" class="dock-item"
+             style="color:{{tab === 'skin' ? t.onPrimaryContainer : t.onSurface}};background-color:{{tab === 'skin' ? t.primaryContainer : 'transparent'}}"
+             @click="pickTab('skin')" />
+    </div>
+
+    <!-- 购买确认（同一时刻只弹一个） -->
+    <div class="modal-mask" if="{{dlg === 'buy'}}" style="height:{{pageH}}px" @click="closeDlg">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}" @click="noop">
+        <text class="modal-title" style="color:{{t.onSurface}}">购买 {{buyName}}</text>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">花费 {{buyPrice}} 棋币 · 余额 {{coins}}</text>
+        <input type="button" class="m-btn" value="购 买"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="confirmBuy" />
+        <input type="button" class="m-btn" value="取 消"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+               @click="closeDlg" />
+      </div>
+    </div>
+
+    <!-- 皮肤购买确认（与物品购买分开：确认后走 economy.buySkin） -->
+    <div class="modal-mask" if="{{dlg === 'skin'}}" style="height:{{pageH}}px" @click="closeDlg">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}" @click="noop">
+        <text class="modal-title" style="color:{{t.onSurface}}">购买 {{skinBuyName}}</text>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.md}}px">花费 {{skinBuyPrice}} 棋币 · 余额 {{coins}}</text>
+        <input type="button" class="m-btn" value="购 买"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="confirmSkinBuy" />
+        <input type="button" class="m-btn" value="取 消"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.hairline}}"
+               @click="closeDlg" />
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './season.css';
+@import '../../common/ui.css';
+@import '../../common/dock.css';
+</style>
+
+<script>
+var router = require('@system.router')
+var config = global.YQ.config
+var economy = global.YQ.economy
+var screen = global.YQ.screen
+var themeMod = global.YQ.theme
+var toastMod = global.YQ.toast
+var puzzles = require('../../puzzles/index.js')
+var campaignStore = require('../../campaign/store.js')
+var campaignCore = require('../../campaign/core.js')
+
+export default {
+  data: {
+    t: themeMod.current(),
+    pageH: 490,
+    fz: config.fontTokens('normal'),
+    tab: 'daily',
+    coins: 0,
+    // 每日挑战卡（默认值先占位，onShow 读到 storage 后替换）
+    daily: {
+      name: '—', streak: 0, reward: economy.DAILY_REWARD,
+      gameId: '', date: '', seed: 0, completed: false, claimed: false,
+      statusText: '读取中', statusColor: themeMod.current().onSurfaceVariant,
+      btnText: '开始挑战', btnBg: 'transparent', btnFg: themeMod.current().onSurfaceVariant
+    },
+    achText: '0/' + economy.ACHIEVEMENTS.length,
+    puzzleText: '0/30',
+    campaignText: '0/' + campaignCore.TOTAL,
+    tasks: [],
+    taskDoneText: '0/' + economy.TASKS.length,
+    items: [],
+    // 皮肤：10 套（棋盘 3 / 骰子 3 / 棋子 2 / 底色 2）
+    skins: [],
+    skinOwnedText: '0/' + economy.SKINS.length,
+    dlg: '',
+    buyId: '',
+    buyName: '',
+    buyPrice: 0,
+    skinBuyId: '',
+    skinBuyName: '',
+    skinBuyPrice: 0
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    var that = this
+    this.fontBump = 0
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.fontBump = cl.fontBump || 0
+      this.pageH = cl.designH
+      this.refreshFonts()
+    }
+    screen.getLayout().then(function (l) {
+      that.fontBump = l.fontBump || 0
+      that.pageH = l.designH
+      that.refreshFonts()
+    })
+  },
+
+  // 输入：无；输出：无。手环10 宽胶囊的内联字号增量（CSS 静态字号由媒体查询负责）。
+  refreshFonts() {
+    var s = config.cachedSettings()
+    this.fz = config.fontTokens(s ? s.fontSize : 'normal', this.fontBump)
+  },
+
+  onShow() {
+    var that = this
+    // 先套用主题（任务行按钮色取自 Token），再读经济数据，避免浅色主题下按钮用深色 Token
+    config.loadSettings().then(function (s) {
+      config.applyTheme(that, s)
+      that.reload()
+    })
+  },
+
+  // 读棋币 / 赛季 / 库存并刷新页面（进入页面与每次领取/购买后调用）
+  reload() {
+    var that = this
+    economy.load().then(function (st) {
+      that.coins = st.coins
+      that.tasks = that.taskRowsOf(st.season)
+      that.taskDoneText = that.claimedTextOf(that.tasks)
+      that.items = that.itemRowsOf(st.items)
+    })
+    // 每日挑战：玩法清单按 config 当前启用的棋种传入，与主页/后续页保持一致
+    economy.loadDaily(this.dailyGameIds()).then(function (d) {
+      that.daily = that.dailyOf(d)
+    })
+    // 皮肤：购买/装备后重进页面仍保持
+    economy.loadSkins().then(function (sk) {
+      that.skins = that.skinRowsOf(sk)
+      that.skinOwnedText = that.skinOwnedOf(that.skins)
+    })
+    this.loadAchText()
+    this.loadPuzzleText()
+    this.loadCampaignText()
+  },
+
+  // 输入：无；输出：无（刷新「闯关 N/60」入口文案）
+  loadCampaignText() {
+    var that = this
+    campaignStore.loadCampaign().then(function (state) {
+      var cleared = 0
+      for (var i = 0; i < campaignCore.LEVELS.length; i++) {
+        if ((state.stars[campaignCore.LEVELS[i].id] || 0) >= 1) cleared++
+      }
+      that.campaignText = cleared + '/' + campaignCore.TOTAL
+    })
+  },
+
+  // 输入：无；输出：当前启用的玩法 id 数组（每日轮换与对局路由共用）
+  dailyGameIds() {
+    var ids = []
+    for (var i = 0; i < config.GAME_TYPES.length; i++) {
+      if (config.GAME_TYPES[i].enabled) ids.push(config.GAME_TYPES[i].id)
+    }
+    return ids
+  },
+
+  // 输入：无；输出：无（刷新「成就 X/42」入口文案）
+  loadAchText() {
+    var that = this
+    economy.loadAch().then(function (ach) {
+      var n = 0
+      for (var k in ach.unlocked) if (ach.unlocked[k]) n++
+      that.achText = n + '/' + economy.ACHIEVEMENTS.length
+    })
+  },
+
+  // 输入：每日状态；输出：卡片视图数据（文案 / 状态色 / 按钮三态）
+  dailyOf(d) {
+    var g = config.getGame(d.gameId)
+    var name = g ? g.name : (d.gameId || '未定')
+    var done = d.completed === true
+    var claimed = d.rewardClaimed === true
+    return {
+      name: name,
+      streak: d.streak || 0,
+      reward: economy.DAILY_REWARD,
+      gameId: d.gameId,
+      date: d.date,
+      seed: d.seed,
+      completed: done,
+      claimed: claimed,
+      statusText: claimed ? '已领取' : (done ? '已通关待领' : '未开始'),
+      statusColor: claimed ? this.t.resultWin : (done ? this.t.primary : this.t.onSurfaceVariant),
+      btnText: claimed ? '再玩一次' : (done ? '领 取' : '开始挑战'),
+      btnBg: this.t.primaryContainer,
+      btnFg: this.t.onPrimaryContainer
+    }
+  },
+
+  // 每日卡按钮：未开始/再玩一次 → 进对应玩法（带挑战参数）；已通关未领 → 领奖
+  dailyAction() {
+    var that = this
+    var d = this.daily
+    if (!d.gameId) {
+      toastMod.toast('今日挑战未就绪')
+      return
+    }
+    if (d.completed && !d.claimed) {
+      // completeDaily 当天未发币时会补发（重试/脏存档场景），已发币则不改状态
+      economy.completeDaily(d.gameId, this.dailyGameIds()).then(function (r) {
+        if (r.reward > 0) toastMod.toast('领取成功 · +' + r.reward + ' 棋币')
+        if (r.coins !== null && r.coins !== undefined) that.coins = r.coins
+        that.daily = that.dailyOf(r.state)
+        that.loadAchText()
+      })
+      return
+    }
+    var g = config.getGame(d.gameId)
+    if (!g || !g.enabled) {
+      toastMod.toast('今日玩法暂不可用')
+      return
+    }
+    // 页面侧种子接入由各玩法页后续实现；本页只负责把挑战参数传过去
+    var params = { challenge: 1, date: d.date, seed: d.seed }
+    if (g.page) {
+      router.push({ uri: g.page, params: params })
+      return
+    }
+    params.type = d.gameId
+    router.push({ uri: 'pages/game', params: params })
+  },
+
+  openAchievements() {
+    router.push({ uri: 'pages/achievements' })
+  },
+
+  // 输入：无；输出：无（刷新「残局 X/30」入口文案）。
+  // 逐题读取 puzzle_done_<id>，与残局列表页共用同一存档口径。
+  loadPuzzleText() {
+    var that = this
+    var jobs = []
+    for (var gi = 0; gi < puzzles.PUZZLE_GAMES.length; gi++) {
+      var list = puzzles.getPuzzles(puzzles.PUZZLE_GAMES[gi].id)
+      for (var k = 0; k < list.length; k++) {
+        jobs.push(config.getPref('puzzle_done_' + list[k].id, false))
+      }
+    }
+    Promise.all(jobs).then(function (vals) {
+      var n = 0
+      for (var i = 0; i < vals.length; i++) if (vals[i] === true) n++
+      that.puzzleText = n + '/' + jobs.length
+    })
+  },
+
+  openPuzzles() {
+    router.push({ uri: 'pages/puzzles' })
+  },
+
+  openCampaign() {
+    router.push({ uri: 'pages/campaign' })
+  },
+
+  // 输入：已领取任务数；输出：头部「已领 X/5」文案
+  claimedTextOf(rows) {
+    var n = 0
+    for (var i = 0; i < rows.length; i++) if (rows[i].claimed) n++
+    return n + '/' + rows.length
+  },
+
+  // 输入：赛季状态；输出：任务行（含按钮文案、进度条和配色）
+  taskRowsOf(season) {
+    var rows = economy.taskRows(season)
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i]
+      r.btnText = r.claimed ? '已领取' : (r.canClaim ? '领 取' : '未完成')
+      r.btnBg = r.canClaim ? this.t.primaryContainer : this.t.surfaceVariant
+      r.btnFg = r.canClaim ? this.t.onPrimaryContainer : this.t.onSurfaceVariant
+      // 进度条：轨道固定 88px，按 cur/need 算实心宽度（不用百分比，避开平台百分比宽度差异）
+      r.pctW = r.need > 0 ? Math.round(88 * r.cur / r.need) : 0
+      r.barColor = r.done ? this.t.resultWin : this.t.primary
+      r.nameColor = r.claimed ? this.t.onSurfaceVariant : this.t.onSurface
+    }
+    return rows
+  },
+
+  // 输入：库存对象；输出：商店行
+  itemRowsOf(inv) {
+    var out = []
+    for (var i = 0; i < economy.ITEMS.length; i++) {
+      var it = economy.ITEMS[i]
+      out.push({
+        id: it.id,
+        name: it.name,
+        desc: it.desc,
+        price: it.price,
+        count: inv[it.id] || 0
+      })
+    }
+    return out
+  },
+
+  // 输入：皮肤状态；输出：皮肤行（按 mat / dice / piece / bg 分类顺序，10 套全列）
+  skinRowsOf(sk) {
+    var out = []
+    for (var i = 0; i < economy.SKIN_CATS.length; i++) {
+      var cat = economy.SKIN_CATS[i]
+      for (var j = 0; j < economy.SKINS.length; j++) {
+        var d = economy.SKINS[j]
+        if (d.category !== cat) continue
+        var owned = sk.owned.indexOf(d.id) >= 0
+        var equipped = sk.equipped[cat] === d.id
+        var free = d.price === 0
+        out.push({
+          id: d.id,
+          category: cat,
+          name: d.name,
+          price: d.price,
+          owned: owned,
+          equipped: equipped,
+          sub: this.skinCatName(cat) + ' · ' +
+            (equipped ? '使用中' : (owned ? '已拥有' : (free ? '默认' : d.price + ' 棋币'))),
+          btnText: equipped ? '使用中' : (owned ? '装 备' : '买入 ' + d.price),
+          btnBg: equipped ? this.t.surfaceVariant : (owned ? this.t.surfaceContainerHigh : this.t.primaryContainer),
+          btnFg: equipped ? this.t.onSurfaceVariant : (owned ? this.t.onSurface : this.t.onPrimaryContainer),
+          nameColor: this.t.onSurface
+        })
+      }
+    }
+    return out
+  },
+
+  // 输入：分类 id；输出：分类中文名（皮肤行副标题用）
+  skinCatName(cat) {
+    if (cat === 'mat') return '棋盘'
+    if (cat === 'dice') return '骰子'
+    if (cat === 'piece') return '棋子'
+    if (cat === 'bg') return '底色'
+    return '外观'
+  },
+
+  // 输入：皮肤行；输出：已拥有数量文案（头部展示）
+  skinOwnedOf(rows) {
+    var n = 0
+    for (var i = 0; i < rows.length; i++) if (rows[i].owned) n++
+    return n + '/' + economy.SKINS.length
+  },
+
+  // 皮肤按钮三态：使用中不响应；已拥有 → 装备；未拥有 → 购买确认
+  skinAction(i) {
+    var sk = this.skins[i]
+    if (!sk || sk.equipped) return
+    if (sk.owned) {
+      this.equipSkinAt(i)
+      return
+    }
+    if (this.coins < sk.price) {
+      toastMod.toast('棋币不足 · 再来几局')
+      return
+    }
+    this.skinBuyId = sk.id
+    this.skinBuyName = sk.name
+    this.skinBuyPrice = sk.price
+    this.dlg = 'skin'
+  },
+
+  // 购买皮肤：重复购买不扣费；成功后刷新余额与行状态
+  confirmSkinBuy() {
+    var that = this
+    var id = this.skinBuyId
+    this.dlg = ''
+    economy.buySkin(id).then(function (r) {
+      if (!r.ok) {
+        toastMod.toast(r.reason === 'poor' ? '棋币不足' : (r.reason === 'owned' ? '已拥有该皮肤' : '购买失败'))
+        return
+      }
+      that.coins = r.coins
+      that.skins = that.skinRowsOf(r.skins)
+      that.skinOwnedText = that.skinOwnedOf(that.skins)
+      toastMod.toast('已购买 · 剩余 ' + r.coins + ' 棋币')
+    })
+  },
+
+  // 装备皮肤：分类取自行数据，不跨类误装备
+  equipSkinAt(i) {
+    var sk = this.skins[i]
+    if (!sk) return
+    var that = this
+    economy.equipSkin(sk.category, sk.id).then(function (r) {
+      if (!r.ok) {
+        toastMod.toast(r.reason === 'locked' ? '尚未拥有该皮肤' : '装备失败')
+        return
+      }
+      that.skins = that.skinRowsOf(r.skins)
+      that.skinOwnedText = that.skinOwnedOf(that.skins)
+      // 换装后当前页的背景/棋子 Token 也立刻生效（loadSettings 会同步皮肤缓存后再 applyTheme）
+      config.loadSettings().then(function (s) { config.applyTheme(that, s) })
+      toastMod.toast('已装备 · ' + sk.name)
+    })
+  },
+
+  // 领取任务：完成且未领取时加棋币
+  claimTask(i) {
+    var row = this.tasks[i]
+    if (!row || !row.canClaim) return
+    var that = this
+    economy.claimTask(row.id).then(function (r) {
+      if (!r.ok) {
+        toastMod.toast(r.reason === 'claimed' ? '已领取过了' : '任务还未完成')
+        return
+      }
+      that.coins = r.coins
+      that.tasks = that.taskRowsOf(r.season)
+      that.taskDoneText = that.claimedTextOf(that.tasks)
+      toastMod.toast('领取成功 · +' + r.reward + ' 棋币')
+    })
+  },
+
+  // 商店：余额不足直接提示；足够则弹确认
+  askBuy(i) {
+    var item = this.items[i]
+    if (!item) return
+    if (this.coins < item.price) {
+      toastMod.toast('棋币不足 · 再来几局')
+      return
+    }
+    this.buyId = item.id
+    this.buyName = item.name
+    this.buyPrice = item.price
+    this.dlg = 'buy'
+  },
+
+  confirmBuy() {
+    var that = this
+    var id = this.buyId
+    this.dlg = ''
+    economy.buyItem(id).then(function (r) {
+      if (!r.ok) {
+        toastMod.toast(r.reason === 'poor' ? '棋币不足' : '购买失败')
+        return
+      }
+      that.coins = r.coins
+      that.items = that.itemRowsOf(r.items)
+      toastMod.toast('已购买 · 剩余 ' + r.coins + ' 棋币')
+    })
+  },
+
+  closeDlg() {
+    this.dlg = ''
+  },
+
+  noop() {},
+
+  // 页面内分类切换：每日 / 任务 / 商店 / 皮肤；切换后回到正文顶部
+  pickTab(k) {
+    if (k === this.tab) return
+    this.tab = k
+    var el = this.$element('body')
+    if (el && el.scrollTo) el.scrollTo({ top: 0 })
+  },
+
+  goBack() {
+    router.back()
+  }
+}
+</script>

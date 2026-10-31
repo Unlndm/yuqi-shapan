@@ -1,0 +1,423 @@
+
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层与背景层同为「定位元素」：层叠次序由文档顺序决定（背景在前 = 在下），
+   这样无论运行时按文档顺序绘制还是按 CSS 层叠规则绘制，内容都在背景之上。
+   只用 position: relative（不设 z-index），不会影响页面里其它绝对定位浮层的层级。 */
+.title-row,
+.season-bar,
+.cards,
+.tabbar {
+  position: relative;
+}
+
+/* ── 品牌标题行：徽标 + 两行文字（标题 / 品类短句） ───────────────── */
+.title-row {
+  width: 168px;
+  flex-direction: row;
+  justify-content: center;   /* 胶囊屏无切换按钮：品牌行保持居中 */
+  align-items: center;
+  margin-top: 24px;
+}
+
+.title-text {
+  flex-direction: column;
+  margin-left: 8px;
+}
+
+/* 品牌徽标：原创 AI 生成的应用标志，与标题同行 */
+.title-logo {
+  width: 24px;
+  height: 24px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 28px;
+  letter-spacing: 1px;
+}
+
+/* 品类短句：比标题小三级、拉开字距，作为首页的「栏目说明」 */
+.title-sub {
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 1px;
+  margin-top: 1px;
+}
+
+/* 方屏专有：卡片排列切换按钮（双列网格 ↔ 单列大卡）。
+   34px 高 = 触摸下限；胶囊屏由模板 if 隐藏。 */
+.title-spacer {
+  flex: 1;
+}
+.title-toggle {
+  width: 44px;
+  height: 34px;
+  border-radius: 17px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 11px;
+  line-height: 32px;
+  text-align: center;
+  padding-left: 0px;
+  padding-right: 0px;
+  margin-left: 6px;
+}
+
+.cards {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  padding-bottom: 6px;
+  flex-direction: column;
+}
+
+/* ── 赛季 / 棋币品牌主卡：primaryContainer 底色，首页唯一的彩色卡 ── */
+.season-bar {
+  width: 168px;
+  height: 56px;
+  border-radius: 16px;
+  flex-direction: column;
+  justify-content: center;
+  padding-left: 12px;
+  padding-right: 12px;
+  margin-bottom: 8px;
+}
+
+.season-line {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.season-name {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.season-coins {
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: bold;
+}
+
+/* 第二行：状态点 + 今日挑战（10px，单行） */
+.season-daily-line {
+  flex-direction: row;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.season-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  margin-right: 6px;
+}
+
+.season-daily {
+  font-size: 10px;
+  line-height: 14px;
+  height: 14px;
+}
+
+/* ── 分组：标题行（名称 + 发丝线 + 数量） ───────────────────────── */
+.group {
+  width: 168px;
+  flex-direction: column;
+}
+
+.group-head {
+  width: 168px;
+  height: 22px;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 10px;
+  margin-bottom: 2px;
+}
+
+.group-name {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.group-rule {
+  flex: 1;
+  height: 1px;
+  margin-left: 8px;
+  margin-right: 8px;
+}
+
+.group-count {
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.group-body {
+  width: 168px;
+}
+
+/* 玩法卡：高一阶表面 + 14 圆角（不描边：1px 边框会改变固定宽卡片的盒宽，
+   在 168 / 85 的窄列里容易左右各溢 1px）。
+   ⚠️ 不加 overflow:hidden —— 卡片尺寸固定、内部无绝对定位子项；
+   每个 overflow 都会让滚动时逐帧多一层裁剪（2026-10-23 主页卡顿的修复口径）。 */
+.card {
+  border-radius: 14px;
+}
+
+/* 棋种徽标：位图按 32×32 显示；PNG 本身已带透明圆角，CSS 不再加 border-radius。 */
+.card-icon {
+  width: 32px;
+  height: 32px;
+}
+
+/* 禁用棋种：灰度图标 + 压暗，表达「本屏不可用」 */
+.icon-dim {
+  opacity: 0.45;
+}
+
+.card-text {
+  flex: 1;
+  flex-direction: column;
+}
+
+.name {
+  font-weight: bold;
+}
+
+.card-sub {
+  line-height: 13px;
+  margin-top: 1px;
+}
+
+/* 可点提示：只占 14px，不参与点击（父卡是热区） */
+.card-chev {
+  width: 14px;
+  font-size: 14px;
+  line-height: 18px;
+  text-align: right;
+  margin-left: 4px;
+}
+
+.tag {
+  font-size: 10px;
+}
+
+/* ── 底部 tab：胶囊屏 = 4 行整宽（192×40 / 枚），底部让位 8 ──
+   窄屏上不再横排：每枚占满整宽，只有上下相邻、没有左右误触；
+   行高 40（≥34），文字居中，底行在屏幕下沿圆弧内仍完整可读。
+   方屏用 176×44 悬浮坞（4 × 44），宽胶囊用 2×2（96×48）。 */
+.tabbar {
+  width: 192px;
+  height: 168px;
+  padding-bottom: 8px;
+  border-width: 0px;
+  border-top-width: 1px;
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+
+.tab {
+  flex: none;
+  width: 192px;
+  height: 40px;
+  line-height: 40px;
+  text-align: center;
+  font-size: 13px;
+  padding-left: 0px;
+  padding-right: 0px;
+}
+
+/* ── 方屏 / 矩形手表（shape: rect）：一行四枚整宽 tab + 双列网格 ── */
+@media screen and (shape: rect) {
+  .title-row {
+    width: 176px;
+    justify-content: flex-start;   /* 方屏：左侧品牌 + 右侧排列切换按钮 */
+    margin-top: 8px;
+  }
+  .title-text {
+    margin-left: 6px;
+  }
+  .title-logo {
+    width: 18px;
+    height: 18px;
+  }
+  /* 方屏整体字号收一档：标题 16、卡名 12、tab 10 */
+  .title {
+    font-size: 16px;
+    line-height: 20px;
+    letter-spacing: 0.5px;
+  }
+  .cards {
+    width: 176px;
+    padding-bottom: 10px;
+  }
+  .season-bar {
+    width: 176px;
+    height: 42px;
+    border-radius: 16px;
+    padding-left: 12px;
+    padding-right: 12px;
+    margin-bottom: 2px;
+  }
+  .season-name {
+    font-size: 11px;
+    line-height: 15px;
+  }
+  .season-coins {
+    font-size: 13px;
+    line-height: 18px;
+  }
+  .season-daily {
+    font-size: 9px;
+    line-height: 13px;
+    height: 13px;
+  }
+  .group {
+    width: 176px;
+  }
+  .group-head {
+    width: 176px;
+    height: 18px;
+    margin-top: 6px;
+    margin-bottom: 2px;
+  }
+  .group-name {
+    font-size: 11px;
+    line-height: 15px;
+  }
+  .group-count {
+    font-size: 9px;
+    line-height: 13px;
+  }
+  .group-body {
+    width: 176px;
+  }
+  .card {
+    border-radius: 14px;
+  }
+  .card-icon {
+    width: 26px;
+    height: 26px;
+  }
+  .name {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .card-sub {
+    line-height: 13px;
+  }
+  .tag {
+    display: none;
+  }
+  .tabbar {
+    width: 176px;
+    height: 44px;
+    margin-bottom: 4px;
+    padding-bottom: 0px;
+    border-radius: 22px;
+    border-width: 1px;
+    border-top-width: 1px;
+    flex-direction: row;
+    flex-wrap: nowrap;
+  }
+  .tab {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    line-height: 44px;
+    font-size: 11px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**。
+   ⚠️ 滚动容器 .cards 不再挂入场动画（会让运行时把它当独立合成层，滚动掉帧）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.title-row { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp / 192×471）：字号 +3~4px，tab 坞放大 ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title-row {
+    margin-top: 32px;
+  }
+  .title {
+    font-size: 26px;
+    line-height: 32px;
+  }
+  .title-sub {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .season-bar {
+    height: 58px;
+    border-radius: 18px;
+  }
+  .season-name {
+    font-size: 14px;
+    line-height: 18px;
+  }
+  .season-coins {
+    font-size: 15px;
+    line-height: 20px;
+  }
+  .season-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+  }
+  .season-daily {
+    font-size: 12px;
+    line-height: 16px;
+    height: 16px;
+  }
+  .group-name {
+    font-size: 13px;
+    line-height: 17px;
+  }
+  .group-count {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .card-sub {
+    line-height: 15px;
+  }
+  .card-chev {
+    font-size: 16px;
+    line-height: 20px;
+  }
+  .tag {
+    font-size: 12px;
+  }
+  .tabbar {
+    width: 192px;
+    height: 104px;
+    padding-bottom: 8px;
+    border-radius: 0px;
+    border-width: 0px;
+    border-top-width: 1px;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .tab {
+    width: 96px;
+    height: 48px;
+    line-height: 48px;
+    font-size: 15px;
+  }
+}

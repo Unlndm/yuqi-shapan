@@ -1,0 +1,1113 @@
+<!--
+  pages/spotdiff — 单人「找不同」40 关。
+  职责：渲染 A/B 两张 176×176 图（高画布上下叠放 / 矮画布单图切换）+ 顶栏状态 + 底部功能键，
+        驱动规则层（rules/spotdiff.js 的 LEVELS / checkTap / foundAll）并做计时、提示、星级、存档与弹窗。
+  规则逻辑全部在 rules/spotdiff.js（纯数据 + 纯函数）；页面只管「驱动 + 演出」。
+  渲染约定（本平台约束）：
+    · 图片必须是 `<image>` 叶节点；判定用**与图同尺寸的透明热区**接 @click，
+      按 minesweeper/sudoku 已验证的「offsetX/offsetY + getBoundingClientRect 实测换算系数」
+      反推 0~1 归一化坐标，再交给 checkTap —— 热区不绑 $item、不用 @longpress。
+    · 已找到的差异用 3px 圆圈标记，圆圈数组走 `for="{{marks}}"`（minesweeper 已验证的路子），
+      标记层在图片之上、热区之下（热区透明且最后声明，始终可点）。
+    · 高画布（designH ≥ 420）上下两张图；矮画布（228/300 方屏）单图 176×176 + A/B 切换，
+      避免把 176 图裁成两半。
+    · 所有按钮显式内联 background-color 与 border-color（本工程要求）；形状/圆角/排版写进 spotdiff.css。
+    · 不自绘 swipe/drag（自绘触摸会吞掉系统侧滑返回手势）。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    
+
+    <!-- 顶栏：圆形返回键 + 两行状态（找到数/错误、关卡/剩余时间）+ 帮助 -->
+    <div class="hud" style="left:{{padX}}px;top:{{topY}}px;width:{{hudW}}px;height:{{topH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-v1" style="color:{{t.onSurface}};font-size:{{fz.md}}px">{{foundText}}</text>
+        <text class="hud-v2" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{hudSub}}</text>
+        <div class="pips">
+          <div class="pip" for="{{pips}}" style="background-color:{{$item.on ? t.primary : t.surfaceVariant}}"></div>
+        </div>
+      </div>
+      <input type="button" class="help-fab" value="?"
+             style="width:{{helpS}}px;height:{{helpS}}px;border-radius:{{helpR}}px;font-size:{{helpF}}px;color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}"
+             @click="openHelp" />
+    </div>
+
+    <!-- 高画布：A / B 上下两图（各 ≤176，圆角由 .shotbox 的 overflow 裁切兜底） -->
+    <block if="{{!compact}}">
+      <div class="shotbox" style="left:{{shotL}}px;top:{{shotATop}}px;width:{{imgSide}}px;height:{{imgSide}}px">
+        <image class="shot" style="left:0px;top:0px;width:{{imgSide}}px;height:{{imgSide}}px" src="{{imgA}}"></image>
+        <text class="shot-tag" style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}">A</text>
+        <div class="mark" for="{{marks}}"
+             style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;border-radius:{{$item.r}}px;border-color:{{$item.bd}}"></div>
+        <div class="tap" id="tapA" style="width:{{imgSide}}px;height:{{imgSide}}px" @click="onTapA"></div>
+      </div>
+      <div class="shotbox" style="left:{{shotL}}px;top:{{shotBTop}}px;width:{{imgSide}}px;height:{{imgSide}}px">
+        <image class="shot" style="left:0px;top:0px;width:{{imgSide}}px;height:{{imgSide}}px" src="{{imgB}}"></image>
+        <text class="shot-tag" style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}">B</text>
+        <div class="mark" for="{{marks}}"
+             style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;border-radius:{{$item.r}}px;border-color:{{$item.bd}}"></div>
+        <div class="tap" id="tapB" style="width:{{imgSide}}px;height:{{imgSide}}px" @click="onTapB"></div>
+      </div>
+    </block>
+
+    <!-- 矮画布：单图 + A/B 切换（不裁切原图） -->
+    <block if="{{compact}}">
+      <div class="shotbox" style="left:{{shotL}}px;top:{{shotATop}}px;width:{{imgSide}}px;height:{{imgSide}}px">
+        <image class="shot" style="left:0px;top:0px;width:{{imgSide}}px;height:{{imgSide}}px" src="{{singleSrc}}"></image>
+        <text class="shot-tag" style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}}">{{viewLabel}}</text>
+        <div class="mark" for="{{marks}}"
+             style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;border-radius:{{$item.r}}px;border-color:{{$item.bd}}"></div>
+        <div class="tap" id="tapS" style="width:{{imgSide}}px;height:{{imgSide}}px" @click="onTapS"></div>
+      </div>
+    </block>
+
+    <!-- 底部①：提示 / 重试（矮画布多一枚 A/B 切换） -->
+    <input type="button" class="cbtn" value="{{hintLabel}}"
+           style="left:{{p1L}}px;top:{{r1Top}}px;width:{{p1W}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+           @click="useHint" />
+    <input type="button" class="cbtn" value="重试"
+           style="left:{{p2L}}px;top:{{r1Top}}px;width:{{p2W}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+           @click="retryLevel" />
+    <input type="button" class="cbtn" if="{{compact}}" value="{{abLabel}}"
+           style="left:{{p3L}}px;top:{{r1Top}}px;width:{{p3W}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+           @click="toggleAB" />
+
+    <!-- 底部②：上一关 / 下一关 / 关卡列表（矮画布收进抽屉，把高度还给图片） -->
+    <block if="{{!compact}}">
+      <input type="button" class="cbtn" value="上一关"
+             style="left:{{q1L}}px;top:{{r2Top}}px;width:{{qW}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="prevLevel" />
+      <input type="button" class="cbtn" value="下一关"
+             style="left:{{q2L}}px;top:{{r2Top}}px;width:{{qW}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{nextHot ? t.onPrimaryContainer : t.onSurfaceVariant}};background-color:{{nextHot ? t.primaryContainer : t.surfaceContainerHigh}};border-color:{{nextHot ? t.primaryContainer : t.outline}}"
+             @click="nextLevel" />
+      <input type="button" class="cbtn" value="关选"
+             style="left:{{q3L}}px;top:{{r2Top}}px;width:{{qW}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+             @click="openList" />
+    </block>
+    <input type="button" class="cbtn" if="{{compact}}" value="菜单"
+           style="left:{{q4L}}px;top:{{r1Top}}px;width:{{rowS}}px;height:{{rowH}}px;font-size:{{sf}}px;color:{{t.onSurface}};background-color:{{t.surfaceVariant}};border-color:{{t.outline}}"
+           @click="openMenu" />
+
+    <!-- 矮画布抽屉：上一关 / 下一关 / 关卡列表 -->
+    <div class="drawer-mask" if="{{showMenu}}" style="height:{{pageH}}px" @click="closeMenu">
+      <div class="drawer" style="background-color:{{t.surfaceContainerHigh}}" @click="noop">
+        <div class="drawer-grip" style="background-color:{{t.outline}}"></div>
+        <div class="d-grid">
+          <input type="button" value="上一关" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuPrev" />
+          <input type="button" value="下一关" class="d-item"
+                 style="color:{{t.primary}};background-color:{{t.surfaceContainerHigh}}" @click="menuNext" />
+          <input type="button" value="关卡列表" class="d-item"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}" @click="menuList" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 关卡列表（全屏覆盖层；长列表交给原生 scroll） -->
+    <div class="list-mask" if="{{showList}}" style="height:{{pageH}}px;background-color:{{t.surface}}">
+      <div class="list-head" style="margin-top:{{listTop}}px">
+        <text class="list-title" style="color:{{t.onSurface}}">关卡</text>
+        <input type="button" class="mini-fab" value="说明"
+               style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="openHelp" />
+        <input type="button" class="mini-fab" value="关"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="closeList" />
+      </div>
+      <text class="list-sum" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{unlockText}}</text>
+      <scroll class="list-body" scroll-y="true" bounces="false" style="height:{{listBodyH}}px">
+        <div class="lv-row" for="{{(i, lv) in levelRows}}"
+             style="background-color:{{lv.bg}};border-color:{{lv.bd}}"
+             @click="pickLevel(i)">
+          <div class="lv-main">
+            <text class="lv-idx" style="background-color:{{lv.badgeBg}};color:{{lv.badgeFg}}">{{lv.idx}}</text>
+            <text class="lv-name" style="color:{{lv.nameColor}}">{{lv.name}}</text>
+            <div class="lv-dots">
+              <div class="lv-dot" style="background-color:{{lv.d1}}"></div>
+              <div class="lv-dot" style="background-color:{{lv.d2}}"></div>
+              <div class="lv-dot" style="background-color:{{lv.d3}}"></div>
+            </div>
+          </div>
+          <text class="lv-sub" style="color:{{lv.subColor}};font-size:{{fz.sm}}px">{{lv.sub}}</text>
+        </div>
+      </scroll>
+    </div>
+
+    <!-- 双击放大（灯箱）：整屏遮罩 + 176 宽滚动窗；图按 2× 渲染（352），拖动看局部 -->
+    <div class="zoom-mask" if="{{zoomOpen}}" style="height:{{pageH}}px" @click="closeZoom">
+      <div class="zoom-wrap" @click="noop">
+        <div class="zoom-head">
+          <text class="zoom-title" style="color:{{t.onSurface}}">放大查看 · {{zoomTag}}</text>
+          <input type="button" class="zoom-close" value="关闭"
+                 style="color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="closeZoom" />
+        </div>
+        <scroll class="zoom-scroll" scroll-x="true" scroll-y="true" bounces="false"
+                style="width:176px;height:{{zoomH}}px">
+          <div class="zoom-stage" style="width:{{zoomImg}}px;height:{{zoomImg}}px">
+            <image class="zoom-img" style="left:0px;top:0px;width:{{zoomImg}}px;height:{{zoomImg}}px" src="{{zoomSrc}}"></image>
+          </div>
+        </scroll>
+      </div>
+    </div>
+
+    <!-- 弹窗（同一时刻只弹一个：dlg 单字段驱动） -->
+    <div class="modal-mask" if="{{dlg !== ''}}" style="height:{{pageH}}px" @click="onMask">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <!-- 通关：用时 / 错误数 / 星级 / 首次奖励 / 解锁 -->
+        <block if="{{dlg === 'win'}}">
+          <text class="modal-title" style="color:{{t.resultWin}}">{{winTitle}}</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{winSub}}</text>
+          <input type="button" class="m-btn" if="{{canNext}}" value="下一关"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="nextLevel" />
+          <input type="button" class="m-btn" value="重玩本关"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="retryLevel" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+        <!-- 超时失败：只给重试与退出 -->
+        <block if="{{dlg === 'lose'}}">
+          <text class="modal-title" style="color:{{t.resultLose}}">时间到</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{loseSub}}</text>
+          <input type="button" class="m-btn" value="重试"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="retryLevel" />
+          <input type="button" class="m-btn" value="返回"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="back" />
+        </block>
+        <!-- 退出确认（进度已自动保存到 save_spot） -->
+        <block if="{{dlg === 'exit'}}">
+          <text class="modal-title" style="color:{{t.onSurface}}">退出本关？</text>
+          <text class="modal-sub" style="color:{{t.onSurfaceVariant}}">{{exitSub}}</text>
+          <input type="button" class="m-btn" value="继续游戏"
+                 style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+                 @click="closeDlg" />
+          <input type="button" class="m-btn" value="存档并退出"
+                 style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+                 @click="leave" />
+        </block>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './spotdiff.css';
+</style>
+
+<script>
+/**
+ * 找不同页脚本。
+ * 规则状态：this.lv（rules/spotdiff.js 的关卡对象）+ this.found（与 diffs 同序的布尔标记）。
+ * 持久化（@system.storage 经 utils/config 的 pref 接口）：
+ *   spot_unlocked —— 已解锁关卡数（1~40）；
+ *   spot_best     —— { 关卡号: { stars, time, wrong, got } }（got = 首次奖励已发）；
+ *   spot_level    —— 上次停留的关卡号；
+ *   save_spot     —— 未完成局的快照（level / found / wrong / sec / hint），退出后下次续玩。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var toastMod = global.YQ.toast
+var storage = global.YQ.storage
+var spotdiff = require('../../rules/spotdiff.js')
+var rng = global.YQ.rng
+var economy = global.YQ.economy
+
+var LEVELS = spotdiff.LEVELS
+var LEVEL_COUNT = LEVELS.length
+var IMG_MAX = 176          // 原图设计尺寸（A/B 均为 176×176）
+var IMG_MIN = 64           // 图再小就看不清差异；极端矮画布时退让到可用高度（不压到按钮）
+var HINT_MAX = 3           // 每关提示次数
+var STACK_MIN_H = 420      // ≥ 此画布高：A/B 上下叠放；否则单图 + 切换
+var HINT_MS = 1800         // 提示高亮时长
+
+// 输入：秒数；输出：'M:SS'（负值/脏值兜底 0）。
+function fmt(sec) {
+  var s = (typeof sec === 'number' && isFinite(sec) && sec > 0) ? Math.floor(sec) : 0
+  var m = Math.floor(s / 60)
+  var r = s % 60
+  return m + ':' + (r < 10 ? '0' + r : '' + r)
+}
+
+// 输入：序号；输出：两位数字串（01..40）。
+function pad2(n) {
+  return n < 10 ? '0' + n : '' + n
+}
+
+// 输入：任意值、最小值、最大值；输出：夹紧后的整数。
+function clampInt(v, lo, hi) {
+  var n = typeof v === 'number' && isFinite(v) ? Math.floor(v) : lo
+  if (n < lo) return lo
+  if (n > hi) return hi
+  return n
+}
+
+// 输入：storage 读到的 spot_best；输出：规范化的 { 关卡号: {stars,time,wrong,got} }。
+function normBestMap(raw) {
+  var out = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (var k in raw) {
+    var v = raw[k]
+    if (!v || typeof v !== 'object') continue
+    var id = parseInt(k, 10)
+    if (!isFinite(id) || id < 1 || id > LEVEL_COUNT) continue
+    out[id] = {
+      stars: clampInt(v.stars, 0, 3),
+      time: (typeof v.time === 'number' && isFinite(v.time) && v.time > 0) ? Math.floor(v.time) : 0,
+      wrong: clampInt(v.wrong, 0, 999),
+      got: v.got === true
+    }
+  }
+  return out
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    campaignLevel: 0,        // 路由参数：闯关指定关内关卡（1~40）
+    t: themeMod.current(),
+    pageH: 490,
+    uiS: 1,
+    isPill: true,
+    compact: false,
+    // 矮画布：第二行按钮收进抽屉，第一行第四枚是「菜单」
+    showMenu: false,
+    q4L: 0, rowS: 34,
+    // 双击放大（灯箱）
+    zoomOpen: false,
+    zoomSrc: '',
+    zoomTag: 'A',
+    zoomImg: 352,     // 176 原图 ×2
+    zoomH: 300,
+    fz: config.fontTokens('normal'),
+
+    // 顶栏几何
+    padX: 8, topY: 58, topH: 44, hudW: 176, navSize: 44, navFont: 20, navR: 22,
+    helpS: 34, helpR: 17, helpF: 16,
+
+    // 关卡 / 状态
+    level: 1,
+    foundText: '0/5 · 错0', hudSub: '1/45 · 余1:10',
+    foundCount: 0, wrong: 0, hintLeft: HINT_MAX, hintLabel: '提示 3',
+    pips: [{ on: false }, { on: false }, { on: false }, { on: false }, { on: false }],
+    nextHot: false,
+
+    // 图片与标记
+    imgA: LEVELS[0].imageA, imgB: LEVELS[0].imageB, singleSrc: LEVELS[0].imageA,
+    showB: false, viewLabel: 'A 图', abLabel: '看 B',
+    imgSide: 148, shotL: 22, shotATop: 110, shotBTop: 266, marks: [],
+
+    // 底部两行按钮
+    rowH: 34, sf: 13,
+    r1Top: 414, r2Top: 452,
+    p1L: 8, p1W: 86, p2L: 98, p2W: 86, p3L: 8, p3W: 56,
+    q1L: 8, q2L: 68, q3L: 128, qW: 56,
+
+    // 关卡列表
+    showList: false, levelRows: [], unlockText: '已解锁 1/45 · 通关 0/40',
+    listTop: 58, listBodyH: 420,
+
+    // 弹窗
+    dlg: '', winTitle: '', winSub: '', loseSub: '', exitSub: '', canNext: false
+  },
+
+  onInit() {
+    config.seedTheme(this)
+    this.timers = []
+    this.lv = null
+    this.found = []
+    this.sec = 0
+    this.tickOn = false
+    this.ended = false
+    this.recorded = false
+    this.hintIdx = -1
+    this.unlocked = 1
+    this.bestMap = {}
+    // 闯关/每日挑战：忽略已解锁进度，直接进指定（或按种子选出）的一关
+    this.isChallenge = Number(this.challenge) === 1
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'spotdiff')
+      this.dailyRng = rng.create(seedNum)
+    }
+    // 点击换算系数（设计像素/client 单位），按热区 id 各存一份；量不到时用屏幕 scale 兜底
+    this.tapKx = { tapA: 1, tapB: 1, tapS: 1 }
+    this.tapKy = { tapA: 1, tapB: 1, tapS: 1 }
+
+    var cl = screen.cachedLayout()
+    if (cl) {
+      this.pageH = cl.designH
+      this.uiS = cl.uiScale
+      this.isPill = cl.profile !== 'rect'
+      this.compact = cl.designH < STACK_MIN_H
+      config.applyFontBump(this, cl)   // 手环10：内联字号 +3
+    }
+    this.layout()
+    this.buildLevelRows()
+
+    var that = this
+    Promise.all([
+      screen.getLayout(),
+      config.getPref('spot_unlocked', 1),
+      config.getPref('spot_best', {}),
+      config.getPref('spot_level', 1),
+      config.getPref('spot_save', null)
+    ]).then(function (vals) {
+      var l = vals[0]
+      that.pageH = l.designH
+      that.uiS = l.uiScale
+      that.isPill = l.profile !== 'rect'
+      config.applyFontBump(that, l)   // 手环10：内联字号 +3
+      that.tapKx.tapA = l.scale
+      that.tapKx.tapB = l.scale
+      that.tapKx.tapS = l.scale
+      that.tapKy.tapA = l.scale
+      that.tapKy.tapB = l.scale
+      that.tapKy.tapS = l.scale
+      that.unlocked = (that.isCampaign || that.isChallenge) ? LEVEL_COUNT : clampInt(vals[1], 1, LEVEL_COUNT)
+      that.bestMap = normBestMap(vals[2])
+      that.buildLevelRows()
+      that.layout()
+      if (that.isCampaign || that.isChallenge) {
+        var startLv = that.isCampaign
+          ? clampInt(that.campaignLevel, 1, LEVEL_COUNT)
+          : ((that.dailyRng ? that.dailyRng.int(LEVEL_COUNT) : 0) + 1)
+        that.beginLevel(startLv, false)
+        that.after(80, function () { that.measureTouch() })
+        return
+      }
+      var start = clampInt(vals[3], 1, that.unlocked)
+      var save = vals[4]
+      var resumed = false
+      if (save && typeof save === 'object') {
+        try { resumed = that.restoreSave(save) } catch (e) { resumed = false }
+      }
+      if (!resumed) that.beginLevel(start, false)
+      that.after(80, function () { that.measureTouch() })
+    })
+    config.loadSettings().then(function (s) {
+      var changed = config.applyTheme(that, s)   // 判重：主题没变就不重设配色绑定（重设 = 空白帧）
+      if (changed) that.paint()
+      haptic.applySettings(s)
+    })
+  },
+
+  // ── 生命周期 ────────────────────────────────────────────────────
+  onShow() {
+    screen.keepScreenOn(true)
+    if (this.hintIdx >= 0) {   // 离屏期间提示定时器被清空，回前台时收起提示圈，避免残留
+      this.hintIdx = -1
+      this.buildMarks()
+    }
+    if (this.lv && !this.ended && !this.showList && this.dlg === '') this.startTick()
+  },
+  onHide() {
+    screen.keepScreenOn(false)
+    this.persistSave()
+    this.stopTick()
+  },
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearPending()
+    this.persistSave()
+    this.stopTick()
+    this.timers = null
+  },
+
+  // 返回拦截语义与其余单人页一致：弹窗 → 关弹窗；列表 → 关列表；进行中 → 存档确认；否则离屏
+  onBackPress() {
+    if (this.zoomOpen) { this.zoomOpen = false; return true }
+    if (this.showMenu) { this.showMenu = false; return true }
+    this.back()
+    return true
+  },
+
+  // ── 矮画布抽屉（上一关 / 下一关 / 关卡列表）──────────────────────
+  openMenu() { this.showMenu = true },
+  closeMenu() { this.showMenu = false },
+  menuPrev() { this.showMenu = false; this.prevLevel() },
+  menuNext() { this.showMenu = false; this.nextLevel() },
+  menuList() { this.showMenu = false; this.openList() },
+
+  // 本页所有延时都走自持定时器数组，离屏/销毁时统一清空，避免裸 setTimeout 常驻。
+  after(ms, fn) {
+    var that = this
+    var id = setTimeout(function () {
+      if (!that.timers) return
+      var idx = that.timers.indexOf(id)
+      if (idx >= 0) that.timers.splice(idx, 1)
+      fn()
+    }, ms)
+    this.timers.push(id)
+  },
+
+  clearTimers() {
+    if (!this.timers) return
+    for (var i = 0; i < this.timers.length; i++) clearTimeout(this.timers[i])
+    this.timers = []
+  },
+
+  // ── 计时（1 秒一拍；弹窗/关卡列表打开时暂停累计，但保持 tick 链）────────
+  startTick() {
+    if (this.tickOn || this.ended) return
+    this.tickOn = true
+    this.scheduleTick()
+  },
+  scheduleTick() {
+    var that = this
+    this.after(1000, function () {
+      if (!that.tickOn) return
+      if (!that.lv || that.ended) { that.tickOn = false; return }
+      if (that.showList || that.dlg !== '') { that.scheduleTick(); return }
+      that.sec++
+      that.syncHud()
+      if (that.sec % 10 === 0) that.persistSave()   // 每 10 秒存档一次，减少闪存写入
+      if (that.sec >= that.lv.timeLimit) { that.finishLose(); return }
+      that.scheduleTick()
+    })
+  },
+  stopTick() {
+    this.tickOn = false
+    this.clearTimers()
+  },
+
+  // ── 布局 ────────────────────────────────────────────────────────
+  // 先扣顶栏与底部两行按钮，余量给图片：高画布一分为二（上下叠放），矮画布单图。
+  // 胶囊屏顶部安全区口径与其余单人页一致（返回键左沿 x=8 时 y ≥ 58）。
+  layout() {
+    var uiS = this.uiS || 1
+    var compact = this.pageH < STACK_MIN_H
+    this.compact = compact
+    var navG = metrics.nav(uiS, compact)
+    var topY = this.isPill ? 58 : (compact ? 2 : Math.max(2, Math.round(4 * uiS)))
+    var topH = navG.size
+    var midGap = compact ? 6 : 8
+    var rowH = 34
+    var rowGap = 4
+    // 底部两行是整行按钮：胶囊屏底部是半圆（R≈96），整宽 176 需 y≥57.6，
+    // 会白吃掉 50px 图高；改为把按钮行收窄到 144 居中（反解 y≥32.5，加真机边框余量取 38），
+    // 图更大、外两枚按钮的圆角也不会被屏幕弧切掉。方屏为矩形屏，保持整宽 176。
+    // 矮画布（<400）：**显示优先** —— 只留一行（提示 / 重试 / 看B / 菜单），
+    // 上一关/下一关/关选进抽屉，图片从 110 → 148（rect 228）/ 176（胶囊）。
+    var rowW = this.isPill ? 144 : 176
+    var rowL = this.isPill ? 24 : 8
+    var bottomPad = this.isPill ? 38 : (compact ? 4 : 6)
+    var blockH = compact ? rowH : (rowH * 2 + rowGap)
+
+    var contentTop = topY + topH + midGap
+    var bottomTop = this.pageH - bottomPad - blockH
+    var avail = bottomTop - contentTop
+    var gap = compact ? 4 : 8
+
+    // 图片边长：优先 176（原图尺寸）；空间不足时等比缩小（不裁切）
+    var side
+    if (compact) {
+      side = Math.min(IMG_MAX, avail)
+    } else {
+      side = Math.floor((avail - gap) / 2)
+      if (side > IMG_MAX) side = IMG_MAX
+    }
+    if (side > IMG_MAX) side = IMG_MAX
+    if (side < IMG_MIN) side = Math.max(40, Math.min(IMG_MAX, avail - (compact ? 0 : gap)))
+    var used = compact ? side : (side * 2 + gap)
+    var slackTop = Math.max(0, Math.round((avail - used) / 2))
+
+    this.imgSide = side
+    this.shotL = Math.round((192 - side) / 2)
+    this.shotATop = contentTop + slackTop
+    this.shotBTop = compact ? this.shotATop : (this.shotATop + side + gap)
+
+    this.topY = topY
+    this.topH = topH
+    this.hudW = 176
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+    this.helpS = compact ? 34 : Math.max(34, Math.round(34 * uiS))
+    this.helpR = Math.round(this.helpS / 2)
+    this.helpF = Math.max(14, Math.round(this.helpS * 0.46))
+    // 胶囊屏按钮行收窄到 144 → 每枚 45，字号取 12；方屏按钮仍是 176 宽（56/70），保持原 13；
+    // 矮画布四枚各 34 → 字号 10（「提示 3」约 30px）。
+    this.sf = (compact ? 10 : (this.isPill ? 12 : Math.max(12, Math.round(13 * uiS)))) + (this.fontBump || 0)
+    this.rowH = rowH
+    this.r1Top = bottomTop
+    this.r2Top = bottomTop + rowH + rowGap
+
+    // 第一行：矮画布四枚（提示/重试/切图/菜单，各 34 + 2px 缝 = 142 居中）；
+    // 高画布两枚（提示/重试）
+    if (compact) {
+      var w4 = 34, g4 = 2
+      var rowX = Math.round((192 - (w4 * 4 + g4 * 3)) / 2)
+      this.p1L = rowX; this.p1W = w4
+      this.p2L = rowX + w4 + g4; this.p2W = w4
+      this.p3L = rowX + (w4 + g4) * 2; this.p3W = w4
+      this.q4L = rowX + (w4 + g4) * 3; this.rowS = w4
+    } else {
+      var w2 = Math.floor((rowW - 4) / 2)
+      this.p1L = rowL; this.p1W = w2
+      this.p2L = rowL + w2 + 4; this.p2W = w2
+      this.p3L = rowL; this.p3W = 56
+    }
+    // 第二行（仅高画布）：上一关 / 下一关 / 关选（三枚等宽 ≥34 触摸目标）
+    var qw = Math.floor((rowW - 8) / 3)
+    this.qW = qw
+    this.q1L = rowL
+    this.q2L = rowL + qw + 4
+    this.q3L = rowL + (qw + 4) * 2
+
+    // 列表头与顶栏同口径下移（胶囊屏顶部半圆会切掉 y≈0 处的控件）；
+    // 列表底部同样让出半圆：视口下沿留 62（176 宽整行需 57.6 + 边框余量），滚到末行时整行不被弧切。
+    this.listTop = topY
+    this.listBodyH = Math.max(80, this.pageH - topY - 44 - 22 - (this.isPill ? 62 : 8))
+  },
+
+  measureTouch() {
+    var ids = this.compact ? ['tapS'] : ['tapA', 'tapB']
+    for (var i = 0; i < ids.length; i++) this.measureOne(ids[i])
+  },
+
+  // 单个热区实测：设计像素 / client 单位 = 图片设计边长 / 热区实测边长。
+  // 量不到就沿用 screen.getLayout 的 scale（192/屏宽dp），绝不假设单位制。
+  measureOne(id) {
+    var that = this
+    var side = this.imgSide
+    try {
+      this.$element(id).getBoundingClientRect({
+        success: function (r) {
+          if (!r || !(r.width > 0) || !(r.height > 0)) return
+          var kx = side / r.width
+          var ky = side / r.height
+          if (kx >= 0.25 && kx <= 4) that.tapKx[id] = kx
+          if (ky >= 0.25 && ky <= 4) that.tapKy[id] = ky
+        },
+        fail: function () {}
+      })
+    } catch (e) {}
+  },
+
+  // ── 关卡 ────────────────────────────────────────────────────────
+  // 输入：关卡号、是否落盘关卡进度；输出：无。清空本关尝试状态并开始计时。
+  beginLevel(id, persist) {
+    var n = clampInt(id, 1, this.unlocked)
+    var lv = spotdiff.getLevel(n)
+    if (!lv) { toastMod.toast('关卡数据异常'); return }
+    this.lv = lv
+    this.level = n
+    this.clearPending()
+    this.zoomOpen = false
+    this.found = []
+    for (var i = 0; i < lv.diffs.length; i++) this.found.push(false)
+    this.foundCount = 0
+    this.wrong = 0
+    this.sec = 0
+    this.hintLeft = HINT_MAX
+    this.hintIdx = -1
+    this.ended = false
+    this.recorded = false
+    this.dlg = ''
+    this.showB = false
+    this.viewLabel = 'A 图'
+    this.abLabel = '看 B'
+    this.applyImages(lv)
+    if (persist !== false) config.saveSetting('spot_level', n)
+    this.layout()
+    this.paint()
+    this.syncHud()
+    this.persistSave()
+    this.startTick()
+    haptic.place()
+    var that = this
+    this.after(80, function () { that.measureTouch() })
+  },
+
+  // 图片路径只在变化时赋值：同路径重复赋值会让 <image> 重新解码，中间帧是空白（闪屏）。
+  applyImages(lv) {
+    if (this.imgA !== lv.imageA) this.imgA = lv.imageA
+    if (this.imgB !== lv.imageB) this.imgB = lv.imageB
+    var s = this.showB ? lv.imageB : lv.imageA
+    if (this.singleSrc !== s) this.singleSrc = s
+  },
+
+  // 输入：save_spot 快照；输出：是否恢复成功。关卡必须仍处于已解锁状态。
+  restoreSave(save) {
+    if (!save || save.v !== 1) return false
+    var raw = (typeof save.level === 'number') ? save.level : parseInt(save.level, 10)
+    if (!isFinite(raw)) return false
+    var n = clampInt(raw, 1, this.unlocked)
+    var lv = spotdiff.getLevel(n)
+    if (!lv || raw !== n) return false
+    var sec = clampInt(save.sec, 0, 999999)
+    if (sec >= lv.timeLimit) return false          // 快照已超时：不要一进页就判负
+    this.beginLevel(n, false)
+    var found = []
+    for (var i = 0; i < lv.diffs.length; i++) found.push(false)
+    var arr = save.found || []
+    var count = 0
+    for (var k = 0; k < arr.length; k++) {
+      var idx = clampInt(arr[k], -1, lv.diffs.length - 1)
+      if (idx >= 0 && found[idx] !== true) { found[idx] = true; count++ }
+    }
+    if (count >= lv.diffs.length) return false     // 异常快照（已全部找到）
+    this.found = found
+    this.foundCount = count
+    this.wrong = clampInt(save.wrong, 0, 999)
+    this.sec = sec
+    this.hintLeft = clampInt(save.hint, 0, HINT_MAX)
+    this.hintIdx = -1
+    this.paint()
+    this.syncHud()
+    this.persistSave()
+    return true
+  },
+
+  // 输入：无；输出：无。主题/照片几何变化后重算标记与列表配色。
+  paint() {
+    this.buildMarks()
+    this.buildLevelRows()
+  },
+
+  // 输入：无；输出：无。进度快照（未完成且未超时才写）。
+  persistSave() {
+    if (!this.lv || this.ended || this.isCampaign || this.isChallenge) return
+    var arr = []
+    for (var i = 0; i < this.found.length; i++) if (this.found[i] === true) arr.push(i)
+    config.saveSetting('save_spot', {
+      v: 1,
+      level: this.level,
+      found: arr,
+      wrong: this.wrong,
+      sec: this.sec,
+      hint: this.hintLeft
+    })
+  },
+
+  // ── 渲染 ────────────────────────────────────────────────────────
+  // 已找到的差异圈（t.primary）+ 提示圈（t.error，仅未找到的那一处）。
+  buildMarks() {
+    var lv = this.lv
+    if (!lv) { this.marks = []; return }
+    var side = this.imgSide
+    var arr = []
+    for (var i = 0; i < lv.diffs.length; i++) {
+      if (this.found[i] !== true) continue
+      var d = lv.diffs[i]
+      var w = Math.max(16, Math.round(d.r * 2 * side * 1.2))
+      arr.push({
+        left: Math.round(d.x * side - w / 2),
+        top: Math.round(d.y * side - w / 2),
+        w: w, r: Math.round(w / 2), bd: this.t.primary
+      })
+    }
+    if (this.hintIdx >= 0 && this.found[this.hintIdx] !== true) {
+      var hd = lv.diffs[this.hintIdx]
+      var hw = Math.max(18, Math.round(hd.r * 2 * side * 1.25))
+      arr.push({
+        left: Math.round(hd.x * side - hw / 2),
+        top: Math.round(hd.y * side - hw / 2),
+        w: hw, r: Math.round(hw / 2), bd: this.t.error
+      })
+    }
+    this.marks = arr
+  },
+
+  // 顶栏文案 + 下一关高亮：找到数 / 错误、关卡进度 / 剩余时间、提示余次。
+  syncHud() {
+    var lv = this.lv
+    if (!lv) return
+    var left = lv.timeLimit - this.sec
+    if (left < 0) left = 0
+    this.foundText = this.foundCount + '/5 · 错' + this.wrong
+    var ps = []
+    for (var pi = 0; pi < 5; pi++) ps.push({ on: pi < this.foundCount })
+    this.pips = ps
+    this.hudSub = this.level + '/' + LEVEL_COUNT + ' · 余' + fmt(left)
+    this.hintLabel = '提示 ' + this.hintLeft
+    this.nextHot = !this.ended && this.level < LEVEL_COUNT && this.level < this.unlocked
+  },
+
+  // 40 行关卡列表：解锁状态 / 星级圆点 / 已找到 / 最佳用时 / 奖励。
+  buildLevelRows() {
+    var rows = []
+    var t = this.t
+    var lit = t.primary
+    var off = t.surfaceVariant
+    var cleared = 0
+    for (var i = 0; i < LEVELS.length; i++) {
+      var lv = LEVELS[i]
+      var rec = this.bestMap[lv.id]
+      var st = (rec && rec.stars) ? rec.stars : 0
+      if (st > 0) cleared++
+      var locked = lv.id > this.unlocked
+      var sub
+      if (locked) sub = '未解锁 · 奖励 ' + lv.reward + ' 棋币'
+      else if (st > 0) sub = '5/5 · 最佳 ' + (rec.time > 0 ? fmt(rec.time) : '—') + ' · 错 ' + rec.wrong + ' · 奖励 ' + lv.reward + ' 棋币'
+      else sub = '未通关 · 奖励 ' + lv.reward + ' 棋币'
+      rows.push({
+        idx: pad2(lv.id),
+        name: lv.name,
+        sub: sub,
+        bg: lv.id === this.level ? t.surfaceContainerHigh : t.surfaceContainer,
+        bd: t.outline,
+        badgeBg: locked ? t.surfaceVariant : t.primaryContainer,
+        badgeFg: locked ? t.onSurfaceVariant : t.onPrimaryContainer,
+        nameColor: locked ? t.onSurfaceVariant : t.onSurface,
+        subColor: t.onSurfaceVariant,
+        d1: st >= 1 ? lit : off,
+        d2: st >= 2 ? lit : off,
+        d3: st >= 3 ? lit : off
+      })
+    }
+    this.levelRows = rows
+    this.unlockText = '已解锁 ' + this.unlocked + '/' + LEVEL_COUNT + ' · 通关 ' + cleared + '/' + LEVEL_COUNT
+  },
+
+  // ── 点击判定 ────────────────────────────────────────────────────
+  onTapA(e) { this.handleTap(e, 'tapA') },
+  onTapB(e) { this.handleTap(e, 'tapB') },
+  onTapS(e) { this.handleTap(e, 'tapS') },
+
+  // 输入：click 事件、热区 id；输出：无。
+  // 坐标系口径同 minesweeper/sudoku：offsetX/offsetY（设计像素）× 实测系数 → 图片内设计坐标 → 归一化。
+  handleTap(e, id) {
+    if (this.showList || this.zoomOpen || this.dlg !== '') return
+    if (!this.lv || this.ended) { haptic.invalid(); return }
+    var ox = e && typeof e.offsetX === 'number' ? e.offsetX : -1
+    var oy = e && typeof e.offsetY === 'number' ? e.offsetY : -1
+    if (ox < 0 || oy < 0) { haptic.invalid(); return }
+    var kx = this.tapKx[id] || 1
+    var ky = this.tapKy[id] || 1
+    var side = this.imgSide
+    if (!side) { haptic.invalid(); return }
+    var nx = (ox * kx) / side
+    var ny = (oy * ky) / side
+    if (!(nx >= 0) || !(nx <= 1) || !(ny >= 0) || !(ny <= 1)) { haptic.invalid(); return }
+
+    // 双击放大：同一处 320ms 内点第二次 → 开灯箱（这一次的标记丢弃）；
+    // 单击延迟 300ms 落账 —— 该平台没有 doubletap 事件，只能用时间窗 + 位置窗区分。
+    var now = Date.now()
+    var p = this.pendingTap
+    if (p && now - p.at <= 320 &&
+        Math.abs(p.nx - nx) <= 0.10 && Math.abs(p.ny - ny) <= 0.10) {
+      clearTimeout(p.timer)
+      this.pendingTap = null
+      this.openZoom(id)
+      return
+    }
+    // 上一笔还在等待且这次位置不同 → 立即补落账，再为本次重新计时
+    if (p) {
+      clearTimeout(p.timer)
+      this.pendingTap = null
+      this.applyTap(p.nx, p.ny)
+    }
+    var that = this
+    var timer = setTimeout(function () {
+      if (!that.pendingTap || that.pendingTap.timer !== timer) return
+      that.pendingTap = null
+      that.applyTap(nx, ny)
+    }, 300)
+    this.pendingTap = { at: now, nx: nx, ny: ny, timer: timer }
+  },
+
+  // 真正落账一次点击（原 handleTap 逻辑）
+  applyTap(nx, ny) {
+    if (!this.lv || this.ended || this.zoomOpen) return
+    var idx = spotdiff.checkTap(this.lv, nx, ny)
+    if (idx >= 0) {
+      if (this.found[idx] === true) {   // 重复点同一处：不计数
+        haptic.invalid()
+        toastMod.toast('这处已经找到了')
+        return
+      }
+      this.found[idx] = true
+      this.foundCount++
+      if (this.hintIdx === idx) this.hintIdx = -1
+      haptic.place()
+      this.buildMarks()
+      this.syncHud()
+      this.persistSave()
+      if (spotdiff.foundAll(this.lv, this.found)) this.finishWin()
+      return
+    }
+
+    this.wrong++
+    haptic.invalid()
+    toastMod.toast('这里没有差异', 1200)
+    this.syncHud()
+    this.persistSave()
+  },
+
+  // ── 双击放大（灯箱） ─────────────────────────────────────────────
+  openZoom(id) {
+    if (!this.lv || this.ended) return
+    this.zoomTag = this.compact ? this.viewLabel : (id === 'tapB' ? 'B' : 'A')
+    this.zoomSrc = this.compact ? this.singleSrc : (id === 'tapB' ? this.imgB : this.imgA)
+    this.zoomH = Math.max(120, this.pageH - 76)
+    this.zoomOpen = true
+    haptic.place()
+  },
+  closeZoom() { this.zoomOpen = false },
+
+  // 清掉未落账的单击（离屏 / 换关 / 销毁）
+  clearPending() {
+    if (this.pendingTap) {
+      clearTimeout(this.pendingTap.timer)
+      this.pendingTap = null
+    }
+  },
+
+  // ── 操作 ────────────────────────────────────────────────────────
+  // 提示：高亮一处未找到的差异（不自动标记为已找到），每关限 HINT_MAX 次。
+  useHint() {
+    if (this.showList || this.dlg !== '' || !this.lv || this.ended) return
+    if (this.hintLeft <= 0) {
+      toastMod.toast('本关提示已用完')
+      haptic.invalid()
+      return
+    }
+    var idx = -1
+    for (var i = 0; i < this.found.length; i++) {
+      if (this.found[i] !== true) { idx = i; break }
+    }
+    if (idx < 0) return
+    this.hintLeft--
+    this.hintIdx = idx
+    this.buildMarks()
+    this.syncHud()
+    this.persistSave()
+    haptic.place()
+    var that = this
+    var keep = idx
+    this.after(HINT_MS, function () {
+      if (that.hintIdx !== keep) return
+      that.hintIdx = -1
+      that.buildMarks()
+    })
+  },
+
+  retryLevel() {
+    if (this.showList) return
+    if (!this.lv) return
+    config.clearPref('save_spot')
+    this.beginLevel(this.level, false)
+  },
+
+  prevLevel() {
+    if (this.showList || this.dlg !== '') return
+    if (this.level <= 1) {
+      toastMod.toast('已是第一关')
+      haptic.invalid()
+      return
+    }
+    this.beginLevel(this.level - 1, true)
+  },
+
+  nextLevel() {
+    if (this.showList) return
+    if (this.level >= LEVEL_COUNT) {
+      toastMod.toast('已是最后一关')
+      haptic.invalid()
+      return
+    }
+    if (this.level >= this.unlocked) {
+      toastMod.toast('先通关本关才能解锁下一关')
+      haptic.invalid()
+      return
+    }
+    this.beginLevel(this.level + 1, true)
+  },
+
+  // 输入：列表行下标（0 起）；输出：无。锁定的关卡只提示，不进入。
+  pickLevel(i) {
+    var n = clampInt(i, 0, LEVEL_COUNT - 1) + 1
+    if (n > this.unlocked) {
+      toastMod.toast('先通关前面的关卡')
+      haptic.invalid()
+      return
+    }
+    this.showList = false
+    this.dlg = ''
+    this.beginLevel(n, true)
+  },
+
+  openList() {
+    if (this.dlg !== '') return
+    this.showList = true
+    haptic.place()
+  },
+
+  closeList() {
+    this.showList = false
+    if (this.lv && !this.ended) this.startTick()
+  },
+
+  // 矮画布单图切换：A ↔ B（同关卡差异位置一致，标记不变）。
+  toggleAB() {
+    if (this.showList || this.dlg !== '' || !this.lv) return
+    this.showB = !this.showB
+    var src = this.showB ? this.lv.imageB : this.lv.imageA
+    if (this.singleSrc !== src) this.singleSrc = src
+    this.viewLabel = this.showB ? 'B 图' : 'A 图'
+    this.abLabel = this.showB ? '看 A' : '看 B'
+    haptic.place()
+    var that = this
+    this.after(80, function () { that.measureTouch() })
+  },
+
+  // 通关：星级 = 完成 1 + 错误 ≤2 + 用时 ≤ timeLimit×0.6；首次 ≥1 星发棋币。
+  finishWin() {
+    if (this.ended) return
+    this.ended = true
+    this.hintIdx = -1
+    this.stopTick()
+    var lv = this.lv
+    var stars = 1
+    if (this.wrong <= 2) stars++
+    if (this.sec <= lv.timeLimit * 0.6) stars++
+
+    var rec = this.bestMap[lv.id]
+    if (!rec) rec = { stars: 0, time: 0, wrong: 0, got: false }
+    var prevGot = rec.got === true
+    var reward = 0
+    // 闯关/每日挑战不改普通关卡进度/奖励（奖励由闯关首通统一发放）
+    if (!this.isCampaign && !this.isChallenge) {
+      if (stars > rec.stars) rec.stars = stars
+      if (!rec.time || this.sec <= rec.time) {   // 最佳用时（同用时取本次错误数）
+        rec.time = this.sec
+        rec.wrong = this.wrong
+      }
+      if (!prevGot) {
+        rec.got = true
+        reward = lv.reward
+      }
+      this.bestMap[lv.id] = rec
+      config.saveSetting('spot_best', this.bestMap)
+    }
+
+    var last = lv.id >= LEVEL_COUNT
+    if (!this.isCampaign && !this.isChallenge && !last && this.unlocked < lv.id + 1) {
+      this.unlocked = lv.id + 1
+      config.saveSetting('spot_unlocked', this.unlocked)
+    }
+    config.clearPref('save_spot')
+
+    // 单人通关计入战绩（mode='solo'）：每次通关只写一次，重玩不会重复计数。
+    if (!this.recorded) {
+      this.recorded = true
+      config.recordResult('spotdiff', 'win', 'solo')
+    }
+    if (reward > 0) {
+      var gain = reward
+      this.grantCoins(gain).then(function (coins) {
+        if (coins !== null) toastMod.toast('首次通关 · +' + gain + ' 棋币', 1600)
+      })
+    }
+
+    this.buildMarks()
+    this.buildLevelRows()
+    this.syncHud()
+    this.canNext = !this.isCampaign && !this.isChallenge && !last && this.level < this.unlocked
+    this.winTitle = last ? '全部通关' : ('第 ' + lv.id + ' 关 · ' + lv.name)
+    this.winSub = '用时 ' + fmt(this.sec) + ' · 错 ' + this.wrong + ' · 星级 ' + stars + '/3' +
+      (reward > 0 ? (' · +' + reward + ' 棋币') : '')
+    if (this.isChallenge) economy.completeDaily('spotdiff')
+    if (this.isCampaign) {
+      var that = this
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: true, time: this.sec }).then(function (info) {
+        if (info && info.text) that.winSub = that.winSub + ' · ' + info.text
+      })
+    }
+    this.dlg = 'win'
+    haptic.celebrate()
+  },
+
+  finishLose() {
+    if (this.ended) return
+    this.ended = true
+    this.hintIdx = -1
+    this.stopTick()
+    config.clearPref('save_spot')
+    this.loseSub = '已找到 ' + this.foundCount + '/5 · 用时 ' + fmt(this.lv.timeLimit)
+    this.buildMarks()
+    this.syncHud()
+    this.dlg = 'lose'
+    haptic.result()
+  },
+
+  // 直接给棋币账户加钱（economy.js 没有「通用加币」接口，与 game.ux 的 grantCoins 同口径）。
+  grantCoins(n) {
+    return storage.getItem('coins', 0).then(function (raw) {
+      var coins = typeof raw === 'number' && isFinite(raw) ? Math.floor(raw) : 0
+      if (coins < 0) coins = 0
+      coins += n
+      return storage.setItem('coins', coins).then(function () { return coins })
+    }, function () {
+      return null
+    })
+  },
+
+  // ── 退出 / 帮助 / 弹窗 ──────────────────────────────────────────
+  back() {
+    if (this.dlg !== '') {   // 关弹窗并恢复计时（超时/通关已 ended，startTick 内部会直接返回）
+      this.dlg = ''
+      this.startTick()
+      return
+    }
+    if (this.showList) { this.showList = false; if (this.lv && !this.ended) this.startTick(); return }
+    if (this.lv && !this.ended && this.sec > 0) {
+      this.persistSave()
+      this.exitSub = '进度已保存，下次进入从本关继续'
+      this.dlg = 'exit'
+      return
+    }
+    this.leave()
+  },
+
+  leave() {
+    this.dlg = ''
+    this.showList = false
+    this.persistSave()
+    this.ended = true
+    this.stopTick()
+    router.back()
+  },
+
+  closeDlg() {
+    this.dlg = ''
+    if (this.lv && !this.ended) this.startTick()
+  },
+
+  openHelp() { router.push({ uri: 'pages/help' }) },
+
+  // 点蒙层只关「可放弃」的弹窗；通关/失败必须走按钮（避免误触丢奖励提示）
+  onMask() {
+    if (this.dlg === 'exit') {
+      this.dlg = ''
+      if (this.lv && !this.ended) this.startTick()
+      return
+    }
+    if (this.dlg === 'win' || this.dlg === 'lose') return
+    this.dlg = ''
+  },
+
+  noop() {}
+}
+</script>

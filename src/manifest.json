@@ -1,0 +1,53 @@
+{
+  "package": "com.application.watch.yiqishapan",
+  "name": "驭棋沙盘",
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "minPlatformVersion": 1100,
+  "icon": "/common/icon.png",
+  "deviceTypeList": [
+    "watch"
+  ],
+  "features": [
+    { "name": "system.router" },
+    { "name": "system.storage" },
+    { "name": "system.vibrator" },
+    { "name": "system.device" },
+    { "name": "system.app" },
+    { "name": "system.brightness" },
+    { "name": "system.prompt" }
+  ],
+  "config": {
+    "logLevel": "log",
+    "designWidth": 192
+  },
+  "router": {
+    "entry": "pages/start",
+    "pages": {
+      "pages/start": { "component": "start" },
+      "pages/index": { "component": "index" },
+      "pages/game": { "component": "game" },
+      "pages/settings": { "component": "settings" },
+      "pages/stats": { "component": "stats" },
+      "pages/season": { "component": "season" },
+      "pages/help": { "component": "help" },
+      "pages/about": { "component": "about" },
+      "pages/monopoly": { "component": "monopoly" },
+      "pages/aeroplane": { "component": "aeroplane" },
+      "pages/g2048": { "component": "g2048" },
+      "pages/slide": { "component": "slide" },
+      "pages/minesweeper": { "component": "minesweeper" },
+      "pages/draughts": { "component": "draughts" },
+      "pages/jungle": { "component": "jungle" },
+      "pages/sokoban": { "component": "sokoban" },
+      "pages/sudoku": { "component": "sudoku" },
+      "pages/werewolf": { "component": "werewolf" },
+      "pages/snake": { "component": "snake" },
+      "pages/maze": { "component": "maze" },
+      "pages/spotdiff": { "component": "spotdiff" },
+      "pages/campaign": { "component": "campaign" },
+      "pages/achievements": { "component": "achievements" },
+      "pages/puzzles": { "component": "puzzles" }
+    }
+  }
+}

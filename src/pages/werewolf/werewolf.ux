@@ -1,0 +1,963 @@
+<!--
+  pages/werewolf — 狼人杀单机页（9 人标准局 / 6 人精简局）。
+  职责：开局模式选择 + 身份揭示 + 夜间/白天状态机驱动 + 玩家列表/发言/日志/投票展示 + 终局弹窗。
+  规则与 AI 全部来自 rules/werewolf.js（纯函数、可注入随机数，有独立测试）：
+    页面只做「调 act / aiChoose + 演出 + 视图派生」，绝不直接修改 state。
+  - 人类固定为 1 号，AI 为 2..N；visibleInfo 只暴露合法信息（终局或人类出局后揭示全部身份）。
+  - AI 行动与夜间节奏：240~400ms 一步（scheduleNext → aiStep）；人类回合停下等点按。
+  - 人类出局后不中断：AI 继续自动推进到终局，页面进入观战（可滚动看完整日志）。
+  - 布局：固定顶栏 + 原生 scroll 正文 + 固定底栏（开始 / 进入投票 / 空刀 / 弃票 / 不开枪 / 观战提示）。
+    9 人玩家列表与日志都在同一个原生 scroll 内（手表上不嵌套第二层滚动）。
+  - 视觉：无位图素材；骨架走 theme.js Token，身份用固定语义色（深色底 + 白字，深浅主题都可读）。
+  - 动效只挂静态 class（本工程未验证动态 class 绑定）；触摸控件 ≥34px。
+-->
+<template>
+  <div class="page" style="background-color:{{t.pageBg}}">
+    <!-- 顶栏让位：胶囊屏顶部半圆安全区（hudT 由 screen.getLayout 换算） -->
+    <div class="spacer" style="height:{{hudT}}px"></div>
+
+    <div class="hud" style="width:{{hudW}}px;height:{{hudH}}px">
+      <input type="button" class="nav-fab" value="＜"
+             style="width:{{navSize}}px;height:{{navSize}}px;border-radius:{{navR}}px;font-size:{{navFont}}px;color:{{t.onSurface}};background-color:{{t.surfaceContainerHigh}}"
+             @click="back" />
+      <div class="hud-stat">
+        <text class="hud-day" style="color:{{t.onSurface}};font-size:{{fz.md}}px">{{state === 'setup' ? '狼人杀' : dayLabel}}</text>
+        <text class="hud-phase" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{state === 'setup' ? '单机对战' : phaseLabel}}</text>
+      </div>
+    </div>
+
+    <div class="spacer" style="height:{{gap}}px"></div>
+
+    <!-- 正文：原生 scroll（9 人玩家列表 + 发言 + 日志都在这里滚动） -->
+    <scroll class="body" id="body" scroll-y="true" bounces="false">
+      <!-- ── 开局设置 ────────────────────────────────────────────── -->
+      <div class="pane" if="{{state === 'setup'}}">
+        <text class="s-title" style="color:{{t.onSurface}};font-size:{{fz.title}}px">狼人杀</text>
+        <text class="s-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">找出狼人，或作为狼人赢下全场。</text>
+
+        <text class="sec-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">对局模式</text>
+        <div class="chips">
+          <div class="chip" for="{{(mi, m) in modes}}"
+               style="background-color:{{m.sel ? t.primaryContainer : t.surfaceVariant}};border-color:{{m.sel ? t.primaryContainer : t.outline}}"
+               @click="pickMode(mi)">
+            <text class="chip-t" style="color:{{m.sel ? t.onPrimaryContainer : t.onSurfaceVariant}};font-size:{{fz.chip}}px">{{m.n}}</text>
+          </div>
+        </div>
+
+        <text class="s-note" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">9 人标准局：3 狼人 · 预言家 · 女巫 · 猎人 · 3 村民</text>
+        <text class="s-note" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">6 人精简局：2 狼人 · 预言家 · 女巫 · 2 村民</text>
+        <text class="s-rule" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">夜晚按身份行动，白天发言后投票放逐。狼人全部出局则好人胜；狼人数量不少于好人则狼人胜。</text>
+        <div style="height:6px"></div>
+      </div>
+
+      <!-- ── 对局 ────────────────────────────────────────────────── -->
+      <div class="pane" if="{{state !== 'setup'}}">
+        <!-- 当前阶段 / 天数 / 最新播报 -->
+        <div class="phase-card" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <div class="phase-head">
+            <text class="phase-day" style="color:{{t.onSurface}};font-size:{{fz.md}}px">{{dayLabel}}</text>
+            <text class="phase-step" style="color:{{t.primary}};font-size:{{fz.sm}}px">{{phaseLabel}}</text>
+          </div>
+          <text class="phase-hint" style="color:{{t.onSurface}};font-size:{{fz.sm}}px">{{phaseHint}}</text>
+          <text class="phase-news" if="{{lastNews}}" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{lastNews}}</text>
+        </div>
+
+        <!-- 人类角色卡：固定语义色底 + 白字（身份不随主题变色） -->
+        <div class="role-card" style="background-color:{{roleColor}};border-color:{{t.outline}}">
+          <div class="role-row">
+            <text class="role-name" style="font-size:{{fz.md}}px">{{roleName}}</text>
+            <text class="role-faction" style="font-size:{{fz.sm}}px">{{factionText}}</text>
+            <text class="role-you" style="font-size:{{fz.sm}}px">1号 · 你</text>
+          </div>
+          <text class="role-skill" style="font-size:{{fz.sm}}px">{{roleSkill}}</text>
+          <text class="role-extra" for="{{roleExtras}}" style="font-size:{{fz.sm}}px">{{$item.text}}</text>
+        </div>
+
+        <!-- 行动目标（夜间刀人 / 查验 / 女巫用药 / 投票 / 猎人开枪） -->
+        <block if="{{targets.length > 0}}">
+          <text class="sec-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{actionTitle}}</text>
+          <div class="trow" for="{{(ti, tg) in targets}}"
+               style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="pickTarget(ti)">
+            <text class="trow-name" style="color:{{t.onSurface}};font-size:{{fz.md}}px">{{tg.name}}</text>
+            <text class="trow-sub" if="{{tg.sub}}" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{tg.sub}}</text>
+            <text class="trow-tag" style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};font-size:{{fz.sm}}px">{{tg.tag}}</text>
+          </div>
+        </block>
+
+        <!-- 当天 AI 发言（规则层在进入白天时一次性生成，这里按当天过滤展示） -->
+        <block if="{{speeches.length > 0}}">
+          <text class="sec-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">发言 · 第 {{day}} 天</text>
+          <div class="sp" for="{{speeches}}" style="background-color:{{t.surfaceContainer}};border-color:{{t.outline}}">
+            <div class="sp-head">
+              <text class="sp-name" style="color:{{t.onSurface}};font-size:{{fz.sm}}px">{{$item.name}}</text>
+              <text class="sp-claim" if="{{$item.claimText}}"
+                    style="color:#FFFFFF;background-color:{{$item.claimColor}};font-size:{{fz.sm}}px">{{$item.claimText}}</text>
+            </div>
+            <text class="sp-text" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{$item.text}}</text>
+          </div>
+        </block>
+
+        <!-- 玩家列表：编号 / 存活状态 / 已知身份（未知为 ？）/ 当前票数；行高 34px -->
+        <text class="sec-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">玩家 · {{aliveText}}</text>
+        <div class="prow" for="{{players}}" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+          <text class="pnum" style="color:{{$item.isYou ? t.primary : t.onSurface}};font-size:{{fz.row}}px">{{$item.name}}</text>
+          <text class="prole" style="background-color:{{$item.roleColor}};color:{{$item.roleFg}};font-size:{{fz.row}}px">{{$item.roleText}}</text>
+          <text class="pstate" style="color:{{$item.stateColor}};font-size:{{fz.row}}px">{{$item.stateText}}</text>
+          <text class="pvote" if="{{$item.voteText}}" style="color:{{t.primary}};font-size:{{fz.row}}px">{{$item.voteText}}</text>
+        </div>
+
+        <!-- 战报日志：只含人类视角可见的条目（私密/狼队信息由 visibleInfo 过滤） -->
+        <text class="sec-label" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">战报日志</text>
+        <text class="logline" for="{{logLines}}" style="color:{{$item.color}};font-size:{{fz.sm}}px">{{$item.text}}</text>
+        <div style="height:6px"></div>
+      </div>
+    </scroll>
+
+    <div class="spacer" style="height:{{gap}}px"></div>
+
+    <!-- 底栏：人类回合给可点按钮；AI/观战回合为静态提示（高度恒定，版面不跳动） -->
+    <div class="bar-btn" if="{{barAction}}"
+         style="height:{{barH}}px;background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+         @click="barTap">
+      <text class="bar-t" style="color:{{t.onPrimaryContainer}};font-size:{{fz.md}}px">{{barLabel}}</text>
+    </div>
+    <div class="bar-static" if="{{!barAction}}"
+         style="height:{{barH}}px;background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+      <text class="bar-t" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{barLabel}}</text>
+    </div>
+
+    <div class="spacer" style="height:{{padB}}px"></div>
+
+    <!-- 身份揭示（开局必弹；点「知道了」或任意空白处关闭后 AI 才开始推进） -->
+    <div class="modal-mask" if="{{showRole}}" style="height:{{pageH}}px" @click="closeRole">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}">
+        <text class="modal-title" style="color:{{t.onSurface}}">你的身份</text>
+        <div class="role-badge" style="background-color:{{roleColor}}">
+          <text class="role-badge-t" style="font-size:16px">{{roleName}}</text>
+        </div>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{factionText}}</text>
+        <text class="modal-skill" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{roleSkill}}</text>
+        <input type="button" class="m-btn" value="知道了"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="closeRole" />
+      </div>
+    </div>
+
+    <!-- 终局：胜负 + 再来一局 / 退出；点遮罩可收起，查看完整身份与日志 -->
+    <div class="modal-mask" if="{{showEnd}}" style="height:{{pageH}}px" @click="hideEnd">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <text class="modal-title" style="color:{{endColor}}">{{endTitle}}</text>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">{{endSub}}</text>
+        <input type="button" class="m-btn" value="再来一局"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="playAgain" />
+        <input type="button" class="m-btn" value="退出"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="exitGame" />
+      </div>
+    </div>
+
+    <!-- 中途退出确认 -->
+    <div class="modal-mask" if="{{showExitConfirm}}" style="height:{{pageH}}px" @click="cancelExit">
+      <div class="modal" style="background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}" @click="noop">
+        <text class="modal-title" style="color:{{t.onSurface}}">离开对局？</text>
+        <text class="modal-sub" style="color:{{t.onSurfaceVariant}};font-size:{{fz.sm}}px">本局进度不保存</text>
+        <input type="button" class="m-btn" value="继续游戏"
+               style="color:{{t.onPrimaryContainer}};background-color:{{t.primaryContainer}};border-color:{{t.primaryContainer}}"
+               @click="cancelExit" />
+        <input type="button" class="m-btn" value="离开"
+               style="color:{{t.onSurfaceVariant}};background-color:{{t.surfaceContainerHigh}};border-color:{{t.outline}}"
+               @click="exitGame" />
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+@import './werewolf.css';
+</style>
+
+<script>
+/**
+ * 狼人杀页脚本。
+ * 状态机：state 'setup' → 开始 → showRole（身份揭示）→ closeRole 后驱动 rules/werewolf.js。
+ * AI 节奏：scheduleNext 每步 240~400ms；人类回合（canAct）不排程，等底栏/目标行点按。
+ * 人类出局后 actor 全是 AI，driver 继续推进到 phase='end'，页面即观战。
+ */
+var router = require('@system.router')
+var config = global.YQ.config
+var themeMod = global.YQ.theme
+var haptic = global.YQ.haptic
+var screen = global.YQ.screen
+var metrics = global.YQ.metrics
+var toastMod = global.YQ.toast
+var ww = require('../../rules/werewolf.js')
+var rng = global.YQ.rng
+var economy = global.YQ.economy
+
+// 身份固定语义色（深色饱和底 + 白字；不随主题切换）。
+// 白字在这五档底色上的对比度实测均 ≥ 7:1，深/浅主题下都清晰。
+var ROLE_COLORS = {
+  wolf: '#8E2A33',      // 红 · 狼人
+  seer: '#1B4D8F',      // 蓝 · 预言家
+  witch: '#5B2A73',     // 紫 · 女巫
+  hunter: '#7A5200',    // 琥珀 · 猎人
+  villager: '#44515C'   // 石板灰 · 村民
+}
+
+// 身份技能说明（身份揭示弹窗与角色卡共用）
+var ROLE_SKILL = {
+  wolf: '每晚与狼队合议击杀一名好人；白天要伪装成好人。',
+  seer: '每晚可查验一名玩家，得知他是狼人还是好人。',
+  witch: '解药与毒药各一瓶，同一夜只能用一瓶。',
+  hunter: '出局时可开枪带走一名存活玩家。',
+  villager: '没有夜间技能，白天靠发言与投票找出狼人。'
+}
+
+// 目标行右侧的动作徽标
+var TARGET_TAG = {
+  wolf: '刀',
+  seer: '验',
+  vote: '投',
+  hunter: '枪',
+  'witch-heal': '救',
+  'witch-poison': '毒'
+}
+
+var TARGET_TITLE = {
+  wolf: '刀人目标',
+  seer: '查验目标',
+  vote: '投票目标',
+  hunter: '开枪目标',
+  'witch-heal': '解药目标',
+  'witch-poison': '毒药目标'
+}
+
+// 输入：玩家 id；输出：显示名（1 号 / 2 号…）。
+function nameOf(id) {
+  return (id + 1) + '号'
+}
+
+// 输入：规则局面；输出：顶栏阶段短语。
+function stepName(st) {
+  if (!st) return ''
+  if (st.phase === 'end') return '游戏结束'
+  if (st.step === 'hunter') return '猎人开枪'
+  if (st.step === 'wolf') return '夜 · 狼人'
+  if (st.step === 'seer') return '夜 · 预言家'
+  if (st.step === 'witch') return '夜 · 女巫'
+  if (st.step === 'discuss') return '昼 · 讨论'
+  if (st.step === 'vote') return '昼 · 投票'
+  return ''
+}
+
+export default {
+  data: {
+    challenge: 0,            // 路由参数：每日挑战（1 = 挑战模式；必须在 data 声明）
+    date: '',                // 路由参数：挑战日期 YYYYMMDD
+    seed: 0,                 // 路由参数：挑战种子
+    campaignId: '',          // 路由参数：闯关关卡 id
+    campaignDiff: '',        // 路由参数：闯关指定难度
+    t: themeMod.current(),
+    pageH: 490,
+    fz: config.fontTokens('normal'),
+    uiS: 1,
+    isPill: true,
+    compact: true,
+
+    // 布局（applyLayout 按机型重算）
+    hudT: 32, hudH: 34, hudW: 140,
+    navSize: 34, navFont: 16, navR: 17,
+    gap: 8, barH: 40, padB: 6,
+
+    // 页面态：setup | game
+    state: 'setup',
+    mode: 9,
+    modes: [
+      { v: 9, n: '9 人标准局', sel: true },
+      { v: 6, n: '6 人精简局', sel: false }
+    ],
+
+    // 对局展示
+    day: 1,
+    dayLabel: '',
+    phaseLabel: '',
+    phaseHint: '',
+    lastNews: '',
+    roleName: '',
+    roleColor: ROLE_COLORS.villager,
+    factionText: '',
+    roleSkill: '',
+    roleExtras: [],
+    actionMode: '',
+    actionTitle: '',
+    targets: [],
+    speeches: [],
+    players: [],
+    logLines: [],
+    aliveText: '',
+
+    // 底栏
+    barAction: true,
+    barLabel: '开始对局',
+    barKind: 'start',
+
+    // 弹窗
+    showRole: false,
+    showEnd: false,
+    showExitConfirm: false,
+    endTitle: '',
+    endSub: '',
+    endColor: ''
+  },
+
+  onInit() {
+    config.seedTheme(this)   // 首帧就用已缓存的设置定配色（避免进页后闪一下）
+    this.st = null           // 规则局面（内部读写，不参与模板绑定）
+    this.vi = null           // 最近一次 visibleInfo
+    this.timer = null        // AI 推进定时器（页面自持，离屏/销毁统一清理）
+    this.scrollTimer = null  // 人类回合出现时把正文滚回顶部（避免错过目标列表）
+    this.uiKey = ''          // 上一次「人类可行动」的阶段标识
+    this.acting = false      // 点按防重入
+    this.recorded = false    // 胜负是否已写入战绩
+    this.witchStage = ''     // 女巫本回合 UI 子阶段：heal / poison
+    this.witchKey = ''       // 女巫子阶段的回合标识（day:witch）
+    this.fontSizeName = 'normal'
+    // 闯关/每日挑战：固定 9 人局，进页后自动开局（身份揭示后由玩家推进）
+    this.isChallenge = Number(this.challenge) === 1
+    this.isCampaign = !!this.campaignId
+    this.dailyRng = null
+    this.dailySeed = 0
+    if (this.isChallenge) {
+      var seedNum = parseInt(this.seed, 10)
+      if (!isFinite(seedNum)) seedNum = rng.dateSeed(this.date, 'werewolf')
+      this.dailySeed = seedNum
+      this.dailyRng = rng.create(seedNum)
+    } else if (this.isCampaign) {
+      this.mode = 9
+      // 闯关：按关卡 id 生成固定种子，同一关每次身份分配一致
+      var hsh = 0
+      for (var ci = 0; ci < this.campaignId.length; ci++) {
+        hsh = (hsh * 31 + this.campaignId.charCodeAt(ci)) % 1000003
+      }
+      this.dailySeed = hsh || 1
+      this.dailyRng = rng.create(this.dailySeed)
+    }
+
+    var that = this
+    var cl = screen.cachedLayout()
+    if (cl) this.applyLayout(cl)
+    screen.getLayout().then(function (l) {
+      that.applyLayout(l)
+      if ((that.isCampaign || that.isChallenge) && that.state === 'setup') that.startGame()
+    })
+    config.loadSettings().then(function (s) {
+      that.fontSizeName = s.fontSize
+      config.applyTheme(that, s)
+      that.syncFonts()
+      haptic.applySettings(s)
+    })
+    this.syncFonts()
+  },
+
+  onShow() {
+    screen.keepScreenOn(true)
+    // 从后台回来：若对局还在推进且没弹窗，补排一次（人类回合会在 scheduleNext 里直接返回）
+    if (this.state === 'game' && this.st && !this.showRole && !this.showEnd) this.scheduleNext()
+  },
+
+  onHide() {
+    screen.keepScreenOn(false)
+    this.clearTimer()
+    this.clearScrollTimer()
+  },
+
+  onDestroy() {
+    screen.keepScreenOn(false)
+    this.clearTimer()
+    this.clearScrollTimer()
+    this.st = null
+    this.vi = null
+  },
+
+  // 返回：弹窗优先；对局中先确认；setup 直接退。
+  onBackPress() {
+    if (this.showRole) { this.closeRole(); return true }
+    if (this.showEnd) { this.hideEnd(); return true }
+    if (this.showExitConfirm) { this.showExitConfirm = false; return true }
+    if (this.state === 'game') {
+      // 终局（无论结果弹窗是否收起）直接退出，不再追问「离开对局？」
+      if (this.st && this.st.phase === 'end') {
+        router.back()
+        return true
+      }
+      this.showExitConfirm = true
+      return true
+    }
+    router.back()
+    return true
+  },
+
+  // 顶栏返回键：不走 onBackPress（部分机型不派发返回事件，直接把逻辑写死在这里）。
+  // 弹窗优先关闭；对局中先弹「离开对局？」确认；其余情况直接退出。
+  back() {
+    if (this.showRole) { this.closeRole(); return }
+    if (this.showEnd) { this.hideEnd(); return }
+    if (this.showExitConfirm) { this.showExitConfirm = false; return }
+    if (this.state === 'game' && this.st && this.st.phase !== 'end') {
+      this.showExitConfirm = true
+      return
+    }
+    this.clearTimer()
+    this.showRole = false
+    this.showEnd = false
+    this.showExitConfirm = false
+    router.back()
+  },
+
+  // ── 布局与字号 ──────────────────────────────────────────────────
+
+  // 输入：screen.getLayout() 结果；输出：无（重算设计像素几何）。
+  // 顶栏让位沿用全站口径：胶囊屏 32（半圆安全区），方屏 2~4；
+  // 底栏高度固定（胶囊 40 / 矮画布 34），保证触摸目标 ≥34。
+  applyLayout(l) {
+    this.pageH = l.designH
+    this.uiS = l.uiScale || 1
+    config.applyFontBump(this, l)   // 手环10：内联字号 +3（随后 syncFonts 重算）
+    this.isPill = l.profile !== 'rect'
+    this.compact = l.designH < 400
+    var navG = metrics.nav(this.uiS, this.compact)
+    this.hudT = this.isPill ? 32 : (this.compact ? 2 : 4)
+    this.hudH = navG.size
+    this.hudW = this.isPill ? 140 : 176
+    this.navSize = navG.size
+    this.navFont = navG.font
+    this.navR = metrics.navRadius(navG.size)
+    this.gap = this.compact ? 6 : 8
+    this.barH = this.compact ? 34 : 40
+    // 底栏沿用「双轨」口径：胶囊屏卡片/底栏统一 168 宽（反解整行完整可见需 49.5，留 4px 余量 → 54）；
+    // 方屏/其他设备共用 176 宽设计（矩形屏无圆弧），沿用 4/6。
+    this.padB = this.isPill ? 54 : (this.compact ? 4 : 6)
+    this.syncFonts()
+  },
+
+  // 内联字号无法被 CSS 媒体查询覆盖：按 uiScale 一起收敛。
+  syncFonts() {
+    var b = config.fontTokens(this.fontSizeName, this.fontBump || 0)
+    var s = this.uiS || 1
+    this.fz = {
+      md: Math.max(9, Math.round(b.md * s)),
+      sm: Math.max(8, Math.round(b.sm * s)),
+      title: Math.max(14, Math.round(20 * s) + (this.fontBump || 0)),
+      // 双模式 chip 只有 82 宽：字号最多 16，否则「9 人标准局」在宽胶囊一行里会溢出
+      chip: this.fontBump ? Math.min(16, Math.round(b.md * s) + this.fontBump) : Math.round(b.md * s),
+      // 玩家行信息密度高（编号/身份/状态/票数横排）：宽胶囊只 +2，避免 3 字身份标签溢出
+      row: Math.max(8, Math.round(b.sm * s) + (this.fontBump ? 2 : 0))
+    }
+  },
+
+  // ── 开局 ────────────────────────────────────────────────────────
+
+  pickMode(mi) {
+    var m = this.modes[mi]
+    if (!m) return
+    this.mode = m.v
+    var out = []
+    for (var i = 0; i < this.modes.length; i++) {
+      out.push({ v: this.modes[i].v, n: this.modes[i].n, sel: this.modes[i].v === m.v })
+    }
+    this.modes = out
+    haptic.place()
+  },
+
+  // 开始对局：规则层随机分配身份；人类 1 号，AI 2..N。
+  startGame() {
+    this.clearTimer()
+    if (this.isChallenge || this.isCampaign) this.dailyRng = rng.create(this.dailySeed)
+    this.st = ww.create(this.mode === 6 ? 6 : 9, this.dailyRng)
+    this.acting = false
+    this.recorded = false
+    this.witchStage = ''
+    this.witchKey = ''
+    this.showEnd = false
+    this.showExitConfirm = false
+    this.state = 'game'
+    this.showRole = true
+    this.refresh()
+    this.scrollTop()
+  },
+
+  // 身份揭示关闭后才开始推进（避免人类还没看清身份 AI 就走完一夜）。
+  closeRole() {
+    if (!this.showRole) return
+    this.showRole = false
+    haptic.place()
+    this.scrollTop()
+    this.scheduleNext()
+  },
+
+  // ── 视图派生（只读 state / visibleInfo） ─────────────────────────
+
+  refresh() {
+    var st = this.st
+    if (!st) return
+    var vi = ww.visibleInfo(st, 0)
+    this.vi = vi
+    var you = vi.you
+
+    this.day = vi.day
+    this.dayLabel = '第 ' + vi.day + ' 天'
+    this.phaseLabel = stepName(st)
+    this.roleName = you ? you.roleName : ''
+    this.roleColor = you ? (ROLE_COLORS[you.role] || ROLE_COLORS.villager) : ROLE_COLORS.villager
+    this.factionText = you ? (you.faction === 'wolf' ? '狼人阵营' : '好人阵营') : ''
+    this.roleSkill = you ? (ROLE_SKILL[you.role] || '') : ''
+    this.roleExtras = this.buildExtras(vi)
+    this.lastNews = this.newsOf(vi, st)
+
+    var mode = ''
+    if (st.phase !== 'end' && vi.canAct) {
+      if (st.step === 'wolf') mode = 'wolf'
+      else if (st.step === 'seer') mode = 'seer'
+      else if (st.step === 'witch') mode = 'witch-' + this.witchStageOf(st)
+      else if (st.step === 'vote') mode = 'vote'
+      else if (st.step === 'hunter') mode = 'hunter'
+      else if (st.step === 'discuss') mode = 'discuss'
+    }
+    this.actionMode = mode
+    this.actionTitle = TARGET_TITLE[mode] || ''
+    this.targets = this.buildTargets(mode, vi)
+    this.phaseHint = this.hintOf(mode, st, vi)
+
+    // 人类回合出现（含女巫解药→毒药的子阶段切换）时把正文滚回顶部，
+    // 保证「阶段提示 + 目标列表」一定在视野内；AI/观战回合不打扰玩家看日志。
+    if (mode) {
+      var uiKey = st.day + '/' + st.step + '/' + mode
+      if (this.uiKey !== uiKey) {
+        this.uiKey = uiKey
+        this.scrollTop()
+      }
+    } else {
+      this.uiKey = ''
+    }
+
+    // 列表按「内容签名」判重后再赋值：AI 每步都 refresh，若每次都重建 9 行玩家 +
+    // 当天发言 + 全量日志，Vela 的 for 列表会整段重渲染，长局后明显卡顿。
+    // 玩家行只在存活 / 身份公开 / 得票变化时重建；发言只在新增时重建；日志同理。
+    var pKey = ''
+    for (var pi = 0; pi < vi.players.length; pi++) {
+      var pp = vi.players[pi]
+      pKey += (pp.alive ? '1' : '0') + (pp.roleName || '?') + (vi.votes[pp.id] || 0) + '|'
+    }
+    if (pKey !== this.playersKey) {
+      this.playersKey = pKey
+      this.players = this.buildPlayers(vi)
+    }
+
+    var spKey = ''
+    if (vi.log.length) {
+      var last = vi.log[vi.log.length - 1]
+      spKey = vi.log.length + '/' + (last.text || '')
+    }
+    if (spKey !== this.speechesKey) {
+      this.speechesKey = spKey
+      this.speeches = this.buildSpeeches(vi, st)
+    }
+
+    var lgKey = vi.log.length ? (vi.log.length + '/' + (vi.log[vi.log.length - 1].text || '')) : '0'
+    if (lgKey !== this.logKey) {
+      this.logKey = lgKey
+      this.logLines = this.buildLog(vi)
+    }
+
+    var alive = 0
+    for (var i = 0; i < vi.players.length; i++) {
+      if (vi.players[i].alive) alive++
+    }
+    this.aliveText = '存活 ' + alive + '/' + vi.players.length
+
+    this.syncBar(mode, st, vi)
+    this.syncEnd(vi, st)
+  },
+
+  // 输入：visibleInfo、局面；输出：阶段卡下方的最新播报。
+  // 白天优先展示「昨晚死讯」，其余阶段展示最后一条日志（入夜/放逐/终局等）。
+  newsOf(vi, st) {
+    if (st.phase === 'day' && (st.step === 'discuss' || st.step === 'vote')) {
+      for (var i = vi.log.length - 1; i >= 0; i--) {
+        if (vi.log[i].type === 'deaths') return vi.log[i].text
+      }
+    }
+    return vi.log.length ? vi.log[vi.log.length - 1].text : ''
+  },
+
+  // 输入：visibleInfo；输出：角色卡附加行（预言家查验历史 / 女巫药水）。
+  buildExtras(vi) {
+    var out = []
+    var you = vi.you
+    if (!you) return out
+    if (you.role === 'seer' && vi.checks && vi.checks.length) {
+      for (var i = vi.checks.length - 1; i >= 0 && out.length < 3; i--) {
+        var c = vi.checks[i]
+        out.push({
+          text: '查验 ' + nameOf(c.target) + ' → ' + (c.result === 'wolf' ? '狼人' : '好人') +
+            '（第 ' + c.day + ' 夜）'
+        })
+      }
+    }
+    if (you.role === 'witch' && vi.potions) {
+      out.push({ text: '解药 ' + vi.potions.heal + ' · 毒药 ' + vi.potions.poison })
+    }
+    return out
+  },
+
+  // 女巫子阶段：本回合先问解药，跳过解药后才问毒药（同夜不能双药）。
+  witchStageOf(st) {
+    var key = st.day + ':witch'
+    if (this.witchKey !== key) {
+      this.witchKey = key
+      var kt = st.night ? st.night.killTarget : null
+      var canHeal = st.witch.heal > 0 && kt !== null && kt !== undefined &&
+        st.players[kt] && st.players[kt].alive
+      this.witchStage = canHeal ? 'heal' : 'poison'
+    }
+    return this.witchStage === 'poison' ? 'poison' : 'heal'
+  },
+
+  // 输入：行动模式、visibleInfo；输出：可点目标行（id / name / sub / tag）。
+  buildTargets(mode, vi) {
+    var out = []
+    if (!mode || mode === 'discuss') return out
+    var tag = TARGET_TAG[mode] || ''
+    var kt = vi.night ? vi.night.killTarget : null
+    for (var i = 0; i < vi.players.length; i++) {
+      var p = vi.players[i]
+      if (!p.alive) continue
+      if (mode === 'wolf' && vi.wolves.indexOf(p.id) >= 0) continue   // 不能刀队友
+      if (mode === 'witch-heal') {
+        if (kt === null || kt === undefined || p.id !== kt) continue
+      } else if (p.id === vi.yourId) {
+        continue                                                      // 其余动作不能选自己
+      }
+      out.push({
+        id: p.id,
+        name: p.name,
+        sub: p.claim ? '称' + ww.ROLE_NAME[p.claim] : '',
+        tag: tag
+      })
+    }
+    return out
+  },
+
+  // 输入：visibleInfo、局面；输出：当天发言（规则层已生成，只做显示拆分）。
+  buildSpeeches(vi, st) {
+    var out = []
+    for (var i = 0; i < vi.log.length; i++) {
+      var e = vi.log[i]
+      if (e.type !== 'speech' || e.day !== st.day) continue
+      var name = nameOf(e.by)
+      var body = e.text
+      var prefix = name + '：'
+      if (body.indexOf(prefix) === 0) body = body.substring(prefix.length)
+      out.push({
+        name: name,
+        text: body,
+        claimText: e.claim ? '称' + ww.ROLE_NAME[e.claim] : '',
+        claimColor: e.claim ? (ROLE_COLORS[e.claim] || ROLE_COLORS.villager) : ROLE_COLORS.villager
+      })
+    }
+    return out
+  },
+
+  // 输入：visibleInfo；输出：玩家行（身份仅显示人类已知的，未知为 ？）。
+  buildPlayers(vi) {
+    var counts = {}
+    for (var k in vi.votes) {
+      if (!Object.prototype.hasOwnProperty.call(vi.votes, k)) continue
+      var target = vi.votes[k]
+      if (target === null || target === undefined) continue
+      counts[target] = (counts[target] || 0) + 1
+    }
+    var out = []
+    for (var i = 0; i < vi.players.length; i++) {
+      var p = vi.players[i]
+      var known = !!p.roleName
+      out.push({
+        id: p.id,
+        name: p.name + (p.isHuman ? ' 你' : ''),
+        isYou: p.isHuman,
+        roleText: known ? p.roleName : '？',
+        roleColor: known ? (ROLE_COLORS[p.role] || ROLE_COLORS.villager) : this.t.surfaceVariant,
+        roleFg: known ? '#FFFFFF' : this.t.onSurfaceVariant,
+        stateText: p.alive ? '存活' : '出局',
+        stateColor: p.alive ? this.t.resultWin : this.t.onSurfaceVariant,
+        voteText: counts[p.id] ? counts[p.id] + ' 票' : ''
+      })
+    }
+    return out
+  },
+
+  // 输入：visibleInfo；输出：日志行（私密条目用主色区分）。
+  buildLog(vi) {
+    var out = []
+    for (var i = 0; i < vi.log.length; i++) {
+      var e = vi.log[i]
+      out.push({
+        text: e.text,
+        color: e.scope === 'private' ? this.t.primary : this.t.onSurfaceVariant
+      })
+    }
+    return out
+  },
+
+  // 输入：行动模式、局面、visibleInfo；输出：阶段提示语（含观战/AI 行动文案）。
+  hintOf(mode, st, vi) {
+    if (st.phase === 'end') return '本局结束，全部身份已揭晓。'
+    if (mode === 'wolf') return '选择今晚击杀的目标（狼队合议，不能刀队友）。'
+    if (mode === 'seer') return '选择一名玩家查验身份。'
+    if (mode === 'witch-heal') {
+      var kt = vi.night ? vi.night.killTarget : null
+      if (kt === null || kt === undefined) return '今晚没有刀口可救，可以不用解药。'
+      return '今晚 ' + nameOf(kt) + ' 倒下了，是否使用解药？'
+    }
+    if (mode === 'witch-poison') return '是否使用毒药？选择一名玩家，或选择不用毒。'
+    if (mode === 'discuss') return 'AI 已发言，请进入投票。'
+    if (mode === 'vote') return '选择要放逐的玩家（不能投自己）。已投 ' +
+      st.voteIndex + '/' + st.voteOrder.length
+    if (mode === 'hunter') return '你已出局，可开枪带走一名存活玩家。'
+
+    if (vi.you && !vi.you.alive) {
+      if (st.step === 'wolf') return '你已出局 · 狼人正在合议，观战中…'
+      if (st.step === 'seer') return '你已出局 · 预言家正在查验，观战中…'
+      if (st.step === 'witch') return '你已出局 · 女巫正在用药，观战中…'
+      if (st.step === 'vote') return '你已出局 · 投票进行中，观战中…'
+      if (st.step === 'hunter') return '你已出局 · 猎人正在决定开枪，观战中…'
+      return '你已出局 · 观战中…'
+    }
+    if (st.step === 'wolf') return '狼人正在合议今晚的目标…'
+    if (st.step === 'seer') return '预言家正在查验…'
+    if (st.step === 'witch') return '女巫正在决定是否用药…'
+    if (st.step === 'discuss') return '玩家正在发言…'
+    if (st.step === 'vote') return st.actor >= 0 ? nameOf(st.actor) + ' 正在投票…' : '投票进行中…'
+    if (st.step === 'hunter') return '猎人正在决定是否开枪…'
+    return '等待中…'
+  },
+
+  // 底栏文案与动作：人类回合给可点入口，其余为静态提示。
+  syncBar(mode, st, vi) {
+    if (st.phase === 'end') {
+      this.barAction = false
+      this.barLabel = '本局结束 · 身份已揭晓'
+      this.barKind = ''
+      return
+    }
+    if (mode === 'discuss') { this.barAction = true; this.barLabel = '进入投票'; this.barKind = 'tovote'; return }
+    if (mode === 'wolf') { this.barAction = true; this.barLabel = '空刀'; this.barKind = 'pass'; return }
+    if (mode === 'vote') { this.barAction = true; this.barLabel = '弃票'; this.barKind = 'pass'; return }
+    if (mode === 'hunter') { this.barAction = true; this.barLabel = '不开枪'; this.barKind = 'pass'; return }
+    if (mode === 'witch-heal') { this.barAction = true; this.barLabel = '不用解药'; this.barKind = 'skip-heal'; return }
+    if (mode === 'witch-poison') { this.barAction = true; this.barLabel = '不用毒药'; this.barKind = 'skip-poison'; return }
+    this.barAction = false
+    this.barKind = ''
+    this.barLabel = (vi.you && !vi.you.alive) ? '观战中 · AI 推进' : 'AI 行动中…'
+  },
+
+  // 终局：记录一次战绩（human 阵营 vs 胜者阵营），弹结果。
+  syncEnd(vi, st) {
+    if (st.phase !== 'end' || !vi.winner || this.recorded) return
+    this.recorded = true
+    var win = !!(vi.you && vi.winner.winner === vi.you.faction)
+    var camp = vi.winner.winner === 'wolf' ? '狼人阵营' : '好人阵营'
+    this.endTitle = win ? '你赢了' : '你输了'
+    this.endColor = win ? this.t.resultWin : this.t.resultLose
+    this.endSub = camp + '胜利 · ' + vi.winner.reason +
+      ' · 你是' + (vi.you ? vi.you.roleName : '')
+    this.showEnd = true
+    config.recordResult('werewolf', win ? 'win' : 'lose', 'ai')
+    var that = this
+    if (this.isChallenge && win) economy.completeDaily('werewolf')
+    if (this.isCampaign) {
+      // 按需加载：普通对局不把闯关关卡数据读进内存
+      var campaign = global.YQ.campaignReport
+      campaign.report(this.campaignId, { win: win, moves: st.day || this.day }).then(function (info) {
+        if (info && info.text) that.endSub = that.endSub + ' · ' + info.text
+      })
+    }
+    if (win) haptic.celebrate()
+    else haptic.result()
+  },
+
+  // ── 行动 ────────────────────────────────────────────────────────
+
+  // 统一的动作入口：拒绝时不改局面，只提示；成功后重派生视图并排下一步。
+  doAct(action) {
+    if (!this.st || this.acting || this.state !== 'game') return
+    this.acting = true
+    var r = ww.act(this.st, action)
+    this.acting = false
+    if (!r.ok) {
+      haptic.invalid()
+      toastMod.toast(r.error || '此处不能这样操作', 1600)
+      this.refresh()
+      return
+    }
+    this.st = r.state
+    if (action.type === 'wolfKill' || action.type === 'hunterShoot') haptic.capture()
+    else haptic.place()
+    this.refresh()
+    this.scheduleNext()
+  },
+
+  // 目标行点击（index 由 for 循环提供，不把 $item 当事件参数）。
+  pickTarget(ti) {
+    var tg = this.targets[ti]
+    if (!tg) return
+    var mode = this.actionMode
+    if (mode === 'wolf') this.doAct({ type: 'wolfKill', target: tg.id })
+    else if (mode === 'seer') this.doAct({ type: 'seerCheck', target: tg.id })
+    else if (mode === 'vote') this.doAct({ type: 'vote', target: tg.id })
+    else if (mode === 'hunter') this.doAct({ type: 'hunterShoot', target: tg.id })
+    else if (mode === 'witch-heal') this.doAct({ type: 'witch', heal: true, poison: null })
+    else if (mode === 'witch-poison') this.doAct({ type: 'witch', heal: false, poison: tg.id })
+  },
+
+  // 底栏点击：按 barKind 分派（按钮文案在 syncBar 里已确定）。
+  barTap() {
+    if (this.barKind === 'start') this.startGame()
+    else if (this.barKind === 'again') this.playAgain()
+    else if (this.barKind === 'tovote') this.toVote()
+    else if (this.barKind === 'pass') this.passAction()
+    else if (this.barKind === 'skip-heal') this.witchSkipHeal()
+    else if (this.barKind === 'skip-poison') this.witchSkipPoison()
+  },
+
+  // 主动放弃：空刀 / 弃票 / 不开枪。
+  passAction() {
+    var mode = this.actionMode
+    if (mode === 'wolf') this.doAct({ type: 'wolfKill', target: null })
+    else if (mode === 'vote') this.doAct({ type: 'vote', target: null })
+    else if (mode === 'hunter') this.doAct({ type: 'hunterShoot', target: null })
+  },
+
+  toVote() {
+    if (this.actionMode !== 'discuss') return
+    this.doAct({ type: 'toVote' })
+  },
+
+  // 女巫：跳过解药后若还有毒药，切到毒药子阶段；否则直接「不用药」结算。
+  witchSkipHeal() {
+    if (this.actionMode !== 'witch-heal') return
+    if (this.vi && this.vi.potions && this.vi.potions.poison > 0) {
+      this.witchStage = 'poison'
+      this.refresh()
+      return
+    }
+    this.doAct({ type: 'witch', heal: false, poison: null })
+  },
+
+  witchSkipPoison() {
+    if (this.actionMode !== 'witch-poison') return
+    this.doAct({ type: 'witch', heal: false, poison: null })
+  },
+
+  // ── AI 推进 ─────────────────────────────────────────────────────
+
+  // 人类回合不排程；AI 回合 240~400ms 后自动行动。
+  scheduleNext() {
+    this.clearTimer()
+    if (!this.st || this.state !== 'game') return
+    if (this.showRole || this.showEnd) return
+    if (this.st.phase === 'end') return
+    var actor = this.st.actor
+    if (actor === null || actor === undefined || actor < 0) return
+    if (!this.st.players[actor] || this.st.players[actor].isHuman) return
+    this.setTimer(240 + Math.floor(Math.random() * 160), this.aiStep)
+  },
+
+  aiStep() {
+    if (!this.st || this.state !== 'game' || this.showRole || this.showEnd) return
+    if (this.st.phase === 'end') return
+    var actor = this.st.actor
+    if (actor === null || actor === undefined || actor < 0) return
+    if (!this.st.players[actor] || this.st.players[actor].isHuman) return
+    var a = ww.aiChoose(this.st)
+    if (!a) {
+      this.refresh()
+      return
+    }
+    var r = ww.act(this.st, a)
+    if (!r.ok) {
+      toastMod.toast(r.error || 'AI 行动失败', 1600)
+      this.refresh()
+      return
+    }
+    this.st = r.state
+    this.refresh()
+    this.scheduleNext()
+  },
+
+  // 页面自持定时器：离屏/销毁/重开统一切，避免裸 setTimeout 常驻。
+  setTimer(ms, fn) {
+    var that = this
+    this.timer = setTimeout(function () {
+      that.timer = null
+      fn.call(that)
+    }, ms)
+  },
+
+  clearTimer() {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+  },
+
+  // 把正文滚回顶部（人类回合）。延迟到数据渲染后再滚，避免滚在旧内容高度上。
+  scrollTop() {
+    var that = this
+    this.clearScrollTimer()
+    this.scrollTimer = setTimeout(function () {
+      that.scrollTimer = null
+      try {
+        that.$element('body').scrollTo({ left: 0, top: 0, behavior: 'auto' })
+      } catch (e) {}
+    }, 80)
+  },
+
+  clearScrollTimer() {
+    if (this.scrollTimer) {
+      clearTimeout(this.scrollTimer)
+      this.scrollTimer = null
+    }
+  },
+
+  // ── 终局出口 ────────────────────────────────────────────────────
+
+  playAgain() {
+    this.showEnd = false
+    this.startGame()
+  },
+
+  exitGame() {
+    this.clearTimer()
+    this.showEnd = false
+    this.showExitConfirm = false
+    router.back()
+  },
+
+  hideEnd() {
+    this.showEnd = false
+    // 收起结果弹窗后底栏改成「再来一局」，避免看完战报后只能退出
+    this.barAction = true
+    this.barLabel = '再来一局'
+    this.barKind = 'again'
+  },
+
+  cancelExit() {
+    this.showExitConfirm = false
+  },
+
+  noop() {}
+}
+</script>

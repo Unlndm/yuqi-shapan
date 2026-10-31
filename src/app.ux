@@ -1,0 +1,48 @@
+<!--
+  app.ux — 应用入口。
+  职责：应用级生命周期 + **共享模块单例**。
+  ⚠️ 为什么要把 utils / core 挂到 global（官方《内存优化》建议「将通用的方法、常量和对象
+  实例统一挂在 global 上，在页面中不用再 import」）：
+    本工程 24 个页面各自被 SDK 打成独立包，若每页都 require config/theme/economy，
+    同一份代码会在每个页面包里复制一遍；页面栈里同时存活 3~5 页时内存成倍增长
+    （手环整机可用内存约 5MB 量级，实测玩家遇到「玩久了卡、偶尔重启」）。
+    改成 app 启动时各初始化一次，页面只取引用 → 页面包更小、堆内存只有一份。
+  页面写法：`var config = global.YQ.config`（不再 require）。
+-->
+<script>
+var config = require('./utils/config.js')
+var theme = require('./utils/theme.js')
+var screen = require('./utils/screen.js')
+var storage = require('./utils/storage.js')
+var haptic = require('./utils/haptic.js')
+var toast = require('./utils/toast.js')
+var rng = require('./utils/rng.js')
+var metrics = require('./utils/metrics.js')
+var economy = require('./utils/economy.js')
+var ai = require('./core/ai.js')
+var BoardGeometry = require('./core/geometry.js')
+var boardRenderer = require('./core/board-renderer.js')
+var campaignReport = require('./campaign/report.js')
+
+// 单例命名空间：带 YQ 前缀，避免与框架/三方库的 global 字段重名。
+global.YQ = {
+  config: config,
+  theme: theme,
+  screen: screen,
+  storage: storage,
+  haptic: haptic,
+  toast: toast,
+  rng: rng,
+  metrics: metrics,
+  economy: economy,
+  ai: ai,
+  BoardGeometry: BoardGeometry,
+  boardRenderer: boardRenderer,
+  campaignReport: campaignReport
+}
+
+export default {
+  onCreate() {},
+  onDestroy() {}
+}
+</script>

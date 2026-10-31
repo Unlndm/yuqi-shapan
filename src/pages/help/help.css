@@ -1,0 +1,184 @@
+/*
+ * pages/help 样式 — 玩法介绍；颜色全部内联绑定 Token。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+/* 内容层改为定位元素：层叠次序由文档顺序决定（背景在前 = 在下），
+   无论运行时按文档顺序还是按 CSS 层叠规则绘制，内容都在背景之上。 */
+.topbar,
+.body {
+  position: relative;
+}
+
+.topbar {
+  width: 192px;
+  height: 56px;
+  border-bottom-width: 1px;
+  margin-top: 24px;
+  flex-direction: row-reverse; /* DOM 中返回钮在后（置顶可点），视觉反转为左位 */
+  align-items: center;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.back-fab {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 20px;
+  padding: 0;
+  margin-right: 10px;
+  background-color: transparent;
+}
+
+/* 胶囊屏顶部半圆安全区：返回钮圆心 (38, 24+22) 到圆弧中心 (96,96) 须 ≤ R−r = 74；
+   24 时为 76.6（被切 2.6px），抬到 32 后为 71.6。方屏是矩形屏，不适用。 */
+@media screen and (shape: pill-shaped) {
+  .topbar {
+    margin-top: 32px;
+  }
+}
+
+.title {
+  flex: 1;
+  text-align: left;
+  padding-left: 10px;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 30px;
+  letter-spacing: 0.5px;
+}
+
+.body {
+  flex: 1;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  width: 168px;
+  flex-direction: column;
+}
+
+.h-group {
+  width: 168px;
+  flex-direction: column;
+}
+
+.h-row {
+  width: 168px;
+  border-radius: 12px;
+  flex-direction: column;
+  padding-top: 10px;
+  padding-bottom: 12px;
+  padding-left: 14px;
+  padding-right: 14px;
+  margin-bottom: 10px;
+}
+
+.h-name {
+  font-size: 15px;
+  font-weight: bold;
+  line-height: 21px;
+  margin-bottom: 2px;
+}
+
+.h-text {
+  font-size: 12px;
+  line-height: 17px;
+}
+
+/* 操作 / 技巧：比正文小一档，作为每款玩法的「补充要点」 */
+.h-meta {
+  font-size: 11px;
+  line-height: 16px;
+  margin-top: 3px;
+}
+
+.sec {
+  font-size: 13px;
+  line-height: 19px;
+  margin-top: 4px;
+  margin-bottom: 6px;
+  margin-left: 4px;
+}
+
+/* 方屏/矩形手表：紧凑参数 */
+@media screen and (shape: rect) {
+  .topbar {
+    height: 36px;
+    margin-top: 10px;
+    padding-left: 4px;
+    padding-right: 10px;
+  }
+  .back-fab {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    font-size: 18px;
+  }
+  .title {
+    text-align: left;
+    padding-left: 42px;
+    padding-right: 8px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  .body {
+    margin-top: 6px;
+    width: 176px;
+  }
+  /* 方屏正文宽 176，说明卡仍是 168 → 差 8px 不齐；统一到 176（文本可用 148）。 */
+  .h-row,
+  .h-group {
+    width: 176px;
+  }
+}
+
+/* ── 入场动效（与其他页统一口径） ──────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / @keyframes；
+   纪律：只动 opacity / transform（GPU 友好）、时长 240~300ms、一律挂**静态 class**
+   （元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-page-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.topbar { animation: ui-page-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+.body { animation: ui-page-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .title {
+    font-size: 24px;
+    line-height: 32px;
+    padding-left: 6px;
+    letter-spacing: 0px;
+  }
+  .back-fab {
+    font-size: 22px;
+  }
+  .h-name {
+    font-size: 18px;
+    line-height: 24px;
+  }
+  .h-text {
+    font-size: 15px;
+    line-height: 21px;
+  }
+  .h-meta {
+    font-size: 13px;
+    line-height: 19px;
+  }
+  .sec {
+    font-size: 16px;
+    line-height: 22px;
+  }
+}

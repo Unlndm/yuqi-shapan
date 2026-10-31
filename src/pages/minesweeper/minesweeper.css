@@ -1,0 +1,204 @@
+/*
+ * pages/minesweeper 样式 — 单人扫雷（6×6/6 与 7×7/10）。
+ * 颜色全部内联绑定（盘面是固定语义色，不随主题切换；骨架走 theme Token）。
+ * 尺寸/坐标由脚本内联绑定设计像素，CSS 只写「形状与骨架」（定位、圆角、排版、动效）。
+ * 布局：整页绝对定位叠放 —— 顶栏（.hud）/ 棋盘（.board）/ 底部按钮（.btn），互不挤压。
+ */
+.page {
+  width: 192px;
+  height: 100%;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* ── 顶栏：返回 + 剩余雷数 + 已用时间 ────────────────────────────── */
+.hud {
+  position: absolute;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-fab {
+  text-align: center;
+  font-weight: bold;
+  padding: 0;
+}
+
+/* 状态块：右对齐两行（余雷 / 用时），字号走 config.fontTokens */
+.hud-stat {
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* ── 棋盘：for 循环的绝对定位格，缝里透出棋盘底色 ────────────────── */
+/* 不设 overflow:hidden —— 与三棋盘口径一致；棋盘四周留 1px 描边，内区正好容下 n×n 格。 */
+.board {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.cell {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 5px;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* 落点热区：透明、盖在棋盘之上，只做命中判定（坐标口径见 minesweeper.ux 模板注释）。
+   与棋盘同 left/top/width/height（内联绑定），故 offsetX/offsetY 就是「距棋盘左边沿的距离」。 */
+.tap-layer {
+  position: absolute;
+}
+
+.cell-t {
+  font-weight: bold;
+  text-align: center;
+}
+
+/* ── 底部按钮（模式键 / 档位 / 新局；文字用 <text>，点击热区是 <div>）── */
+/* 底部三枚（模式键 / 档位 / 新局）：圆角与 g2048、slide 同口径（RADIUS.card=12） */
+.btn {
+  position: absolute;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-t {
+  font-weight: bold;
+  text-align: center;
+}
+
+/* ── 弹窗（样式口径与 g2048 / slide / monopoly 一致）─────────────── */
+.modal-mask {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  width: 192px;
+  background-color: rgba(0, 0, 0, 0.65);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  width: 150px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.modal-title {
+  font-size: 17px;
+  font-weight: bold;
+  line-height: 22px;
+}
+
+.modal-sub {
+  font-size: 12px;
+  line-height: 17px;
+  margin-top: 2px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+/* 弹窗内的整行按钮：与其余五页统一为同名同类 .m-btn（规格见 utils/metrics.js） */
+.m-btn {
+  width: 130px;
+  height: 40px;
+  border-radius: 20px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 14px;
+  margin-top: 6px;
+  background-color: transparent;
+}
+
+/* ── 动效层 ──────────────────────────────────────────────────────
+   平台依据：官方 animation-style 文档确认支持 transform / animation /
+   @keyframes（0% 与 100% 必须都写）。只动 opacity / transform（GPU 友好），
+   一律挂在**静态 class** 上（元素挂载即播放；本工程未验证动态 class 绑定）。 */
+@keyframes ui-modal-in {
+  0% { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal { animation: ui-modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-title-pop {
+  0% { opacity: 0; transform: scale(0.88); }
+  60% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.modal-title { animation: ui-title-pop 320ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-board-in {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.board { animation: ui-board-in 280ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes ui-btn-in {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.btn { animation: ui-btn-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 顶栏入场（与其余九页统一口径：只动 opacity/transform、240ms、静态 class） */
+@keyframes ui-hud-in {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.hud { animation: ui-hud-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ── 弹窗分机型档（2026-10-23）：默认 = 胶囊屏 150 宽 / 按钮 130×40；
+   rect = 160 宽 / 按钮 140×34（矮画布方屏三按钮弹窗约 181px，留出上下留白）。
+   数值与 utils/metrics.js 的 MODAL / BTN 对应。 */
+@media screen and (shape: rect) {
+  .modal {
+    width: 160px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .m-btn {
+    width: 140px;
+    height: 34px;
+    border-radius: 17px;
+    margin-top: 4px;
+  }
+}
+
+/* ── 小米手环10（宽胶囊 106dp）：字号 +3~4px ── */
+@media screen and (shape: pill-shaped) and (min-width: 100) {
+  .modal-title {
+    font-size: 20px;
+    line-height: 27px;
+  }
+  .modal-sub {
+    line-height: 19px;
+  }
+  .m-btn {
+    font-size: 17px;
+  }
+}
