@@ -324,3 +324,30 @@
   position: absolute;
   background-color: rgba(0, 0, 0, 0);
 }
+
+
+/* 像素风：地图烘焙底图 + 16×16 角色/道具贴图；方格对齐、直角 */
+.maze-map {
+  position: absolute;
+  image-rendering: pixelated;
+}
+.cell-img {
+  position: absolute;
+  image-rendering: pixelated;
+}
+.cell {
+  border-radius: 0px;
+}
+.hud {
+  border-radius: 4px;
+}
+.joy-base {
+  border-radius: 4px;
+}
+.joy-knob {
+  border-radius: 3px;
+}
+.dbtn,
+.abtn {
+  border-radius: 4px;
+}

@@ -38,9 +38,11 @@
             style="left:{{vx}}px;top:{{vy}}px;width:{{vw}}px;height:{{vh}}px">
       <div class="stage" style="width:{{wrapW}}px;height:{{wrapH}}px">
         <div class="board" style="margin-left:{{boardL}}px;margin-top:{{boardT}}px;width:{{boxW}}px;height:{{boxH}}px;background-color:{{boardBg}};border-color:{{t.outline}}">
+          <image class="maze-map" src="{{levelImg}}" style="left:0px;top:0px;width:{{boxW}}px;height:{{boxH}}px"></image>
           <div class="cell" for="{{cells}}"
                style="left:{{$item.left}}px;top:{{$item.top}}px;width:{{$item.w}}px;height:{{$item.w}}px;background-color:{{$item.bg}};border-color:{{$item.bd}}">
-            <text class="cell-t" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.t}}</text>
+            <image class="cell-img" if="{{$item.img}}" src="{{$item.img}}" style="left:0px;top:0px;width:{{$item.w}}px;height:{{$item.w}}px"></image>
+            <text class="cell-t" if="{{$item.t}}" style="color:{{$item.fg}};font-size:{{$item.fs}}px;line-height:{{$item.lh}}px">{{$item.t}}</text>
           </div>
         </div>
       </div>
@@ -238,6 +240,7 @@ export default {
     navSize: 44, navFont: 20, navR: 22,
     vx: 8, vy: 158, vw: 176, vh: 220, wrapW: 176, wrapH: 220,
     boardL: 0, boardT: 0, boxW: 176, boxH: 176, boardBg: themeMod.current().surfaceContainer,
+    levelImg: '/common/img/maze/m01.png',
     cells: [], cell: 18, gap: GRID_GAP,
     // 矮画布（<400）：显示优先 —— 底部只留方向键，上关/重置/帮助/下关进顶栏「菜单」抽屉
     compact: false,
@@ -300,6 +303,7 @@ export default {
       var saved = that.readSave(vals[3], that.unlocked)
       if (saved) {
         that.level = saved.level
+        that.levelImg = that.mazeImage(saved.level)
         that.st = saved.st
         that.recorded = false
         that.layout()
@@ -417,7 +421,7 @@ export default {
     var cols = this.st ? this.st.width : 9
     var rows = this.st ? this.st.height : 9
     var vw = 176
-    var gap = GRID_GAP
+    var gap = 0
     var fitW = Math.floor((vw - 2 - (cols - 1) * gap) / cols)
     var fitH = Math.floor((viewH - 2 - (rows - 1) * gap) / rows)
     var baseCell = Math.min(MAX_CELL, fitW, fitH)
@@ -506,6 +510,11 @@ export default {
 
   // ── 关卡与存档 ──────────────────────────────────────────────────
   // 输入：关卡号、是否落盘关卡进度；输出：无。超界/未解锁一律夹到合法范围。
+  mazeImage(lv) {
+    var n = clampInt(lv, 1, 25)
+    return '/common/img/maze/m' + (n < 10 ? '0' + n : '' + n) + '.png'
+  },
+
   loadLevel(n, persist) {
     var lv = clampInt(n, 1, this.unlocked)
     var data = LEVELS[lv - 1]
@@ -516,6 +525,7 @@ export default {
       return
     }
     this.level = lv
+    this.levelImg = this.mazeImage(lv)
     this.st = st
     this.recorded = false
     this.dropSave = false
@@ -581,6 +591,7 @@ export default {
         top: Math.floor(i / st.width) * step,
         w: cell,
         t: look.t,
+        img: look.img || '',
         fg: look.fg,
         bg: look.bg,
         bd: look.bd,
@@ -595,21 +606,28 @@ export default {
   cellLook(i) {
     var st = this.st
     var t = this.t
-    if (st.walls[i]) return { t: '', fg: WALL_BG, bg: WALL_BG, bd: WALL_BD }
-    // 玩家所在格永远可见（即使 visited 异常也不能把人藏进雾里）
-    if (i === st.player) return { t: '人', fg: t.onPrimary, bg: t.primary, bd: t.primary }
-    if (!st.visited[i]) return { t: '', fg: FOG_BG, bg: FOG_BG, bd: FOG_BD }
-    if (i === st.exit) {
-      if (st.collectedKeys < st.totalKeys) {
-        return { t: '锁', fg: t.onSurfaceVariant, bg: t.surfaceVariant, bd: t.outline }
-      }
-      return { t: '出', fg: t.onPrimaryContainer, bg: t.primaryContainer, bd: t.primary }
+    // 像素地图底图负责墙/地板；这里只叠加雾、角色和道具。
+    if (st.walls[i]) return { t: '', img: '', fg: WALL_BG, bg: 'transparent', bd: 'transparent' }
+    if (i === st.player) return { t: '', img: '/common/img/maze/player.png', fg: t.onPrimary, bg: 'transparent', bd: 'transparent' }
+    if (!st.visited[i]) {
+      // 玩家周围 1 格作为“微光视野”，避免开局整盘全黑；不写入 visited，走过才真正揭开。
+      var w = st.width
+      var px = st.player % w
+      var py = Math.floor(st.player / w)
+      var dx = Math.abs((i % w) - px)
+      var dy = Math.abs(Math.floor(i / w) - py)
+      if (dx <= 1 && dy <= 1) return { t: '', img: '', fg: FOG_BG, bg: 'transparent', bd: 'transparent' }
+      return { t: '', img: '', fg: FOG_BG, bg: FOG_BG, bd: FOG_BD }
     }
-    if (st.keys[i]) return { t: '钥', fg: KEY_FG, bg: KEY_BG, bd: KEY_BD }
-    if (st.gems[i]) return { t: '宝', fg: GEM_FG, bg: GEM_BG, bd: GEM_BD }
-    if (st.traps[i]) return { t: '陷', fg: TRAP_FG, bg: TRAP_BG, bd: TRAP_BD }
-    if (st.potions[i]) return { t: '药', fg: POT_FG, bg: POT_BG, bd: POT_BD }
-    return { t: '', fg: t.onSurface, bg: t.surfaceContainerHigh, bd: t.surfaceContainerHigh }
+    if (i === st.exit) {
+      if (st.collectedKeys < st.totalKeys) return { t: '', img: '/common/img/maze/lock.png', fg: t.onSurfaceVariant, bg: 'transparent', bd: 'transparent' }
+      return { t: '', img: '/common/img/maze/exit.png', fg: t.onPrimaryContainer, bg: 'transparent', bd: 'transparent' }
+    }
+    if (st.keys[i]) return { t: '', img: '/common/img/maze/key.png', fg: KEY_FG, bg: 'transparent', bd: 'transparent' }
+    if (st.gems[i]) return { t: '', img: '/common/img/maze/gem.png', fg: GEM_FG, bg: 'transparent', bd: 'transparent' }
+    if (st.traps[i]) return { t: '', img: '/common/img/maze/trap.png', fg: TRAP_FG, bg: 'transparent', bd: 'transparent' }
+    if (st.potions[i]) return { t: '', img: '/common/img/maze/potion.png', fg: POT_FG, bg: 'transparent', bd: 'transparent' }
+    return { t: '', img: '', fg: t.onSurface, bg: 'transparent', bd: 'transparent' }
   },
 
   syncHud() {
